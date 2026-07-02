@@ -26,16 +26,12 @@
     <div class="btnGroup" role="group" aria-label="Project">
       <button id="btnSaveTranscript" class="btn" type="button">Save Transcript</button>
       <button id="btnSaveProject" class="btn" type="button">Save Project</button>
-      <button id="btnOpenProject" class="btn" type="button">Open</button>
+      <button id="btnOpenProject" class="btn" type="button">Open Project</button>
       <button id="btnExportCopy" class="btn" type="button">Export Copy</button>
     </div>
     <p id="saveStatus" class="hint" role="status" aria-live="polite"></p>
 
     <div class="btnGroup" role="group" aria-label="View">
-      <button id="btnLayoutToggle" class="btn" type="button" aria-pressed="false">
-        Layout: <span id="layoutLabel">Side by side</span>
-      </button>
-      <button id="btnPinVideo" class="btn" type="button" aria-pressed="true">Pin Video</button>
       <button id="btnToggleCoding" class="btn" type="button" aria-pressed="false" aria-controls="codingPanel">
         Coding Panel
       </button>
@@ -54,8 +50,9 @@
   <input type="file" id="projectInput" accept=".json,.xlsx,.xls,.tsv,.csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/tab-separated-values,text/csv" hidden>
 </header>
 
-<main id="mainLayout" class="layout-side">
+<main id="mainLayout">
   <section id="videoPanel" aria-label="Video player">
+    <div id="videoDragHandle" class="videoDragHandle" title="Drag to move">⠿ Video</div>
     <div id="videoEmpty" class="videoEmpty">
       <p id="videoEmptyText">Load a video to start transcribing.</p>
       <ul id="videoList" class="fileList"></ul>
@@ -95,8 +92,23 @@
       <button id="btnAddRow" class="btn btnSmall" type="button">+ Row</button>
       <button id="btnInsertTimestamp" class="btn btnSmall" type="button">+ Row at current time</button>
       <button id="btnAddCol" class="btn btnSmall" type="button">+ Column</button>
+      <button id="btnUndo" class="btn btnSmall" type="button" disabled title="Undo (Ctrl/Cmd+Z)">Undo</button>
+      <button id="btnRedo" class="btn btnSmall" type="button" disabled title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
       <button id="btnMergeCells" class="btn btnSmall" type="button" disabled>Merge Cells</button>
       <span class="hint mergeHint">Click a cell, shift-click another in the same column to select a range to merge.</span>
+
+      <div class="tableSizeControl">
+        <button id="btnTableSize" class="btn btnSmall" type="button" aria-expanded="false" aria-controls="tableSizePopover">Resize Transcript</button>
+        <div id="tableSizePopover" class="popover" hidden>
+          <label class="fieldLabel">Width
+            <input type="range" id="tableWidthRange" min="300" max="2000" step="10">
+          </label>
+          <label class="fieldLabel">Height
+            <input type="range" id="tableHeightRange" min="200" max="1200" step="10">
+          </label>
+          <button id="btnTableSizeReset" class="btnGhost" type="button">Reset to default</button>
+        </div>
+      </div>
     </div>
     <div class="tableScroll">
       <table id="grid">
@@ -120,7 +132,7 @@
 <div id="settingsOverlay" class="overlay" hidden>
   <div id="settingsDialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <h2 id="settingsTitle">Keyboard shortcuts</h2>
-    <p class="dialogHint">Click "Change", then press the key you want. Play always pauses and rewinds 0.5s on release.</p>
+    <p class="dialogHint">Click "Change", then press the key(s) you want — hold a modifier like Shift and tap a letter (e.g. Shift+W) for a combo. Play always pauses and rewinds 0.5s on release.</p>
     <p id="shortcutMsg" class="shortcutMsg" role="status"></p>
     <ul class="shortcutList" id="shortcutList"></ul>
     <div class="dialogActions">

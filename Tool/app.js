@@ -35,7 +35,7 @@ const videoNameLabel = document.getElementById('videoNameLabel');
 const videoSizeRange = document.getElementById('videoSizeRange');
 const videoSeekBar = document.getElementById('videoSeekBar');
 const videoPanel = document.getElementById('videoPanel');
-const btnPinVideo = document.getElementById('btnPinVideo');
+const tablePanel = document.getElementById('tablePanel');
 const playStatus = document.getElementById('playStatus');
 const timeDisplay = document.getElementById('timeDisplay');
 const shortcutHints = document.getElementById('shortcutHints');
@@ -49,9 +49,6 @@ const codeCounts = document.getElementById('codeCounts');
 const projectInput = document.getElementById('projectInput');
 const transcriptStart = document.getElementById('transcriptStart');
 const transcriptList = document.getElementById('transcriptList');
-const mainLayout = document.getElementById('mainLayout');
-const btnLayoutToggle = document.getElementById('btnLayoutToggle');
-const layoutLabel = document.getElementById('layoutLabel');
 const settingsOverlay = document.getElementById('settingsOverlay');
 const settingsDialog = document.getElementById('settingsDialog');
 const shortcutList = document.getElementById('shortcutList');
@@ -144,19 +141,12 @@ videoSeekBar.addEventListener('input', () => {
   video.currentTime = parseFloat(videoSeekBar.value);
 });
 
-// ---- Pin video (stays in view while the transcript scrolls) -------------
-let pinVideo = localStorage.getItem('qualtool.pinVideo') !== 'false';
-function applyPinVideo() {
-  videoPanel.style.position = pinVideo ? 'sticky' : 'static';
-  videoPanel.style.top = pinVideo ? '22px' : 'auto';
-  videoPanel.style.zIndex = pinVideo ? '70' : ''; // above the grid, frozen columns, size rail, back-to-top
-  btnPinVideo.setAttribute('aria-pressed', String(pinVideo));
+// ---- Header height (video overlay positions itself just below it) -------
+function updateHeaderHeightVar() {
+  const h = document.querySelector('.siteHeader').getBoundingClientRect().height;
+  document.documentElement.style.setProperty('--header-height', `${h}px`);
 }
-btnPinVideo.onclick = () => {
-  pinVideo = !pinVideo;
-  localStorage.setItem('qualtool.pinVideo', String(pinVideo));
-  applyPinVideo();
-};
+window.addEventListener('resize', updateHeaderHeightVar);
 
 // ---- Video size ---------------------------------------------------------
 let videoWidth = parseInt(localStorage.getItem('qualtool.videoWidth'), 10) || 380;
@@ -177,20 +167,133 @@ videoSizeRange.oninput = () => {
 };
 window.addEventListener('resize', applyVideoWidth);
 
+// ---- Video position (drag anywhere) --------------------------------------
+let videoPos = null;
+try { videoPos = JSON.parse(localStorage.getItem('qualtool.videoPos')); } catch (e) { /* ignore malformed storage */ }
+
+function applyVideoPos() {
+  videoPanel.style.left = videoPos ? `${videoPos.left}px` : '';
+  videoPanel.style.top = videoPos ? `${videoPos.top}px` : '';
+}
+applyVideoPos();
+
+document.getElementById('videoDragHandle').addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const rect = videoPanel.getBoundingClientRect();
+  const startLeft = rect.left;
+  const startTop = rect.top;
+  document.body.style.userSelect = 'none';
+
+  function onMove(moveEvent) {
+    const left = Math.max(0, Math.min(window.innerWidth - 60, startLeft + (moveEvent.clientX - startX)));
+    const top = Math.max(0, Math.min(window.innerHeight - 40, startTop + (moveEvent.clientY - startY)));
+    videoPos = { left, top };
+    applyVideoPos();
+  }
+  function onUp() {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    document.body.style.userSelect = '';
+    localStorage.setItem('qualtool.videoPos', JSON.stringify(videoPos));
+  }
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+});
+
+// ---- Transcript size (width/height popover) ------------------------------
+const tableSizePopover = document.getElementById('tableSizePopover');
+const tableWidthRange = document.getElementById('tableWidthRange');
+const tableHeightRange = document.getElementById('tableHeightRange');
+let tableWidth = parseInt(localStorage.getItem('qualtool.tableWidth'), 10) || null;
+let tableHeight = parseInt(localStorage.getItem('qualtool.tableHeight'), 10) || null;
+
+function applyTableSize() {
+  document.documentElement.style.setProperty('--table-width', tableWidth ? `${tableWidth}px` : '100%');
+  document.documentElement.style.setProperty('--table-height', tableHeight ? `${tableHeight}px` : '75vh');
+}
+function updateTableSizeBounds() {
+  tableWidthRange.max = String(Math.max(300, window.innerWidth - 40));
+  tableHeightRange.max = String(Math.max(200, window.innerHeight - 100));
+  tableWidthRange.value = String(tableWidth || tablePanel.getBoundingClientRect().width);
+  tableHeightRange.value = String(tableHeight || tablePanel.getBoundingClientRect().height);
+}
+applyTableSize();
+
+document.getElementById('btnTableSize').onclick = () => {
+  const willShow = tableSizePopover.hidden;
+  tableSizePopover.hidden = !willShow;
+  document.getElementById('btnTableSize').setAttribute('aria-expanded', String(willShow));
+  if (willShow) updateTableSizeBounds();
+};
+tableWidthRange.oninput = () => {
+  tableWidth = parseInt(tableWidthRange.value, 10);
+  localStorage.setItem('qualtool.tableWidth', String(tableWidth));
+  applyTableSize();
+};
+tableHeightRange.oninput = () => {
+  tableHeight = parseInt(tableHeightRange.value, 10);
+  localStorage.setItem('qualtool.tableHeight', String(tableHeight));
+  applyTableSize();
+};
+document.getElementById('btnTableSizeReset').onclick = () => {
+  tableWidth = null;
+  tableHeight = null;
+  localStorage.removeItem('qualtool.tableWidth');
+  localStorage.removeItem('qualtool.tableHeight');
+  applyTableSize();
+  updateTableSizeBounds();
+};
+
 // ---- Rebindable shortcuts ------------------------------------------
-const DEFAULT_BINDINGS = { play: 'ArrowUp', rewind: 'ArrowLeft', forward: 'ArrowRight' };
+// Bindings are stored as "combo strings" — modifiers in a fixed order plus
+// a main key, e.g. "shift+w" or "ctrl+shift+arrowup". A plain "arrowup" is
+// just the single-key case of the same format, so old bindings still work.
+const DEFAULT_BINDINGS = { play: 'arrowup', rewind: 'arrowleft', forward: 'arrowright' };
 const ACTION_LABELS = { play: 'Play / Pause', rewind: 'Rewind', forward: 'Fast-forward' };
 const ACTION_HINTS = {
   play: 'hold to play, release to pause & rewind 0.5s',
   rewind: 'hold to rewind',
   forward: 'hold to fast-forward',
 };
+const MODIFIER_TOKENS = new Set(['ctrl', 'alt', 'shift', 'meta']);
 const UNBINDABLE = new Set(['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'CapsLock', 'Escape']);
+const RESERVED_COMBOS = new Set(['shift+arrowup', 'shift+arrowdown']); // used for moving between rows
+
+function comboSatisfied(combo) {
+  return !!combo && combo.split('+').every((tok) => heldTokens.has(tok));
+}
+
+// Always lowercased so Shift changing a letter's case (w -> W) doesn't turn
+// into a different-looking binding — the shift modifier is tracked separately.
+function keyToken(key) {
+  const map = { Control: 'ctrl', Shift: 'shift', Alt: 'alt', Meta: 'meta', OS: 'meta' };
+  if (map[key]) return map[key];
+  return key.toLowerCase();
+}
+
+function comboFromEvent(e) {
+  const parts = [];
+  if (e.ctrlKey) parts.push('ctrl');
+  if (e.altKey) parts.push('alt');
+  if (e.shiftKey) parts.push('shift');
+  if (e.metaKey) parts.push('meta');
+  const main = keyToken(e.key);
+  if (!MODIFIER_TOKENS.has(main)) parts.push(main);
+  return parts.join('+');
+}
 
 function loadBindings() {
   try {
     const saved = JSON.parse(localStorage.getItem('qualtool.bindings'));
-    if (saved && saved.play && saved.rewind && saved.forward) return saved;
+    if (saved && saved.play && saved.rewind && saved.forward) {
+      // Light migration: old versions stored a raw single key (sometimes
+      // uppercase if Shift was held without recording it as a modifier).
+      // Lowercasing single characters keeps them working as a plain binding.
+      const fix = (v) => (typeof v === 'string' && v.length === 1 ? v.toLowerCase() : v);
+      return { play: fix(saved.play), rewind: fix(saved.rewind), forward: fix(saved.forward) };
+    }
   } catch (e) { /* ignore malformed storage */ }
   return { ...DEFAULT_BINDINGS };
 }
@@ -200,16 +303,23 @@ function saveBindings() {
 }
 
 function keyLabel(key) {
-  const map = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', ' ': 'Space' };
-  if (map[key]) return map[key];
+  const map = {
+    arrowup: '↑', arrowdown: '↓', arrowleft: '←', arrowright: '→', ' ': 'Space',
+    ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', meta: 'Cmd/Win',
+  };
+  const lower = key.toLowerCase();
+  if (map[lower]) return map[lower];
   return key.length === 1 ? key.toUpperCase() : key;
+}
+function comboLabel(combo) {
+  return (combo || '').split('+').map(keyLabel).join(' + ');
 }
 
 function renderShortcutHints() {
   shortcutHints.innerHTML = '';
   ['play', 'rewind', 'forward'].forEach((action) => {
     const li = document.createElement('li');
-    li.innerHTML = `<kbd>${keyLabel(bindings[action])}</kbd> <span>${ACTION_HINTS[action]}</span>`;
+    li.innerHTML = `<kbd>${comboLabel(bindings[action])}</kbd> <span>${ACTION_HINTS[action]}</span>`;
     shortcutHints.appendChild(li);
   });
 }
@@ -229,7 +339,7 @@ function renderShortcutList() {
     right.className = 'shortcutRowRight';
 
     const badge = document.createElement('kbd');
-    badge.textContent = keyLabel(bindings[action]);
+    badge.textContent = comboLabel(bindings[action]);
     right.appendChild(badge);
 
     const btn = document.createElement('button');
@@ -294,11 +404,42 @@ function trapFocus(e) {
 const SCRUB_STEP = 0.5;
 const SCRUB_MS = 100;
 let scrubTimer = null;
-const heldKeys = new Set();
+const heldTokens = new Set();   // every key token currently physically held (modifiers included)
+const activeActions = new Set(); // which of play/rewind/forward are currently triggered
 
 function isEditingCell() {
   const el = document.activeElement;
   return el && (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'SELECT');
+}
+
+function isGridCell(el) {
+  return !!el && el.tagName === 'TD' && el.isContentEditable && !!el.dataset.colId;
+}
+
+function placeCursorAtEnd(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+// Moves focus to the same column in the row above/below, skipping over rows
+// where that column is covered by a merge (no <td> of its own to focus).
+function moveCellFocus(currentTd, rowDelta) {
+  const colId = currentTd.dataset.colId;
+  const rows = [...gridBody.querySelectorAll('tr')];
+  let rowIdx = rows.indexOf(currentTd.closest('tr')) + rowDelta;
+  while (rowIdx >= 0 && rowIdx < rows.length) {
+    const targetTd = rows[rowIdx].querySelector(`td[data-col-id="${colId}"]`);
+    if (targetTd) {
+      targetTd.focus();
+      placeCursorAtEnd(targetTd);
+      return;
+    }
+    rowIdx += rowDelta;
+  }
 }
 function startScrub(direction) {
   if (scrubTimer) return;
@@ -312,17 +453,27 @@ function stopScrub() {
 }
 
 function handleKeyDown(e) {
-  // Capturing a new shortcut key inside the settings dialog.
+  // Track physically-held keys unconditionally, before any early returns
+  // below, so modifier state stays accurate for multi-key combos even if a
+  // modifier was pressed while e.g. a cell was focused.
+  heldTokens.add(keyToken(e.key));
+
+  // Capturing a new shortcut key (or key combo) inside the settings dialog.
   if (listeningFor) {
     e.preventDefault();
     if (e.key === 'Escape') { listeningFor = null; renderShortcutList(); return; }
-    if (UNBINDABLE.has(e.key)) return;
-    const conflict = Object.entries(bindings).find(([act, k]) => act !== listeningFor && k === e.key);
-    if (conflict) {
-      shortcutMsg.textContent = `"${keyLabel(e.key)}" is already used for ${ACTION_LABELS[conflict[0]]}.`;
+    if (UNBINDABLE.has(e.key)) return; // pure modifier/Tab/CapsLock alone — keep listening for the real key
+    const combo = comboFromEvent(e);
+    if (RESERVED_COMBOS.has(combo)) {
+      shortcutMsg.textContent = `"${comboLabel(combo)}" is reserved for moving between transcript rows.`;
       return;
     }
-    bindings[listeningFor] = e.key;
+    const conflict = Object.entries(bindings).find(([act, k]) => act !== listeningFor && k === combo);
+    if (conflict) {
+      shortcutMsg.textContent = `"${comboLabel(combo)}" is already used for ${ACTION_LABELS[conflict[0]]}.`;
+      return;
+    }
+    bindings[listeningFor] = combo;
     saveBindings();
     listeningFor = null;
     shortcutMsg.textContent = '';
@@ -338,49 +489,71 @@ function handleKeyDown(e) {
     return;
   }
 
+  // Undo/redo — skipped while actually typing in a cell so the browser's
+  // own text-undo handles in-progress edits; ours takes over once you
+  // click away (see the cell focus/blur handlers in renderBody).
+  if (!isEditingCell() && (isUndoKey(e) || isRedoKey(e))) {
+    e.preventDefault();
+    if (isRedoKey(e)) redo(); else undo();
+    return;
+  }
+
+  // Tab/Shift+Tab already move across cells in a row natively. Shift+Up/Down
+  // move to the same column in the row above/below.
+  if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && isGridCell(document.activeElement)) {
+    e.preventDefault();
+    moveCellFocus(document.activeElement, e.key === 'ArrowUp' ? -1 : 1);
+    return;
+  }
+
   if (isEditingCell()) return;
   if (!video.src) return;
 
-  const boundKeys = [bindings.play, bindings.rewind, bindings.forward];
-  if (!boundKeys.includes(e.key)) return;
-  e.preventDefault();
-  if (heldKeys.has(e.key)) return; // ignore key-repeat
-  heldKeys.add(e.key);
-
-  if (e.key === bindings.play) video.play();
-  else if (e.key === bindings.rewind) startScrub(-1);
-  else if (e.key === bindings.forward) startScrub(1);
+  // A binding can now be a chord (e.g. "shift+w"), so "satisfied" means
+  // every key it names is currently held, not just the one in this event.
+  let matched = false;
+  ['play', 'rewind', 'forward'].forEach((action) => {
+    if (!comboSatisfied(bindings[action])) return;
+    matched = true;
+    if (activeActions.has(action)) return; // already triggered — ignore OS key-repeat
+    activeActions.add(action);
+    if (action === 'play') video.play();
+    else startScrub(action === 'rewind' ? -1 : 1);
+  });
+  if (matched) e.preventDefault();
 }
 
 function handleKeyUp(e) {
-  if (!heldKeys.has(e.key)) return;
-  heldKeys.delete(e.key);
+  heldTokens.delete(keyToken(e.key));
 
-  if (e.key === bindings.play) {
-    video.pause();
-    video.currentTime = Math.max(0, video.currentTime - 0.5);
-  } else if (e.key === bindings.rewind || e.key === bindings.forward) {
-    stopScrub();
-  }
+  // Releasing any key in a chord (not just the "main" one) should stop the
+  // action — letting go of Shift while still holding W stops "Shift+W" too.
+  ['play', 'rewind', 'forward'].forEach((action) => {
+    if (!activeActions.has(action) || comboSatisfied(bindings[action])) return;
+    activeActions.delete(action);
+    if (action === 'play') {
+      video.pause();
+      video.currentTime = Math.max(0, video.currentTime - 0.5);
+    } else {
+      stopScrub();
+    }
+  });
 }
 
 window.addEventListener('keydown', handleKeyDown);
 window.addEventListener('keyup', handleKeyUp);
 
-// ---- Layout toggle ------------------------------------------------------
-let layout = localStorage.getItem('qualtool.layout') === 'stacked' ? 'stacked' : 'side';
-function applyLayout() {
-  mainLayout.classList.toggle('layout-stacked', layout === 'stacked');
-  mainLayout.classList.toggle('layout-side', layout === 'side');
-  btnLayoutToggle.setAttribute('aria-pressed', String(layout === 'stacked'));
-  layoutLabel.textContent = layout === 'stacked' ? 'Stacked' : 'Side by side';
-}
-btnLayoutToggle.onclick = () => {
-  layout = layout === 'stacked' ? 'side' : 'stacked';
-  localStorage.setItem('qualtool.layout', layout);
-  applyLayout();
-};
+// If focus leaves the window while a key is held (Alt-Tab, clicking another
+// app), its keyup can be missed entirely — without this, that key would
+// stay "stuck" held forever as far as the chord tracking is concerned.
+window.addEventListener('blur', () => {
+  heldTokens.clear();
+  if (activeActions.has('play')) video.pause();
+  if (activeActions.has('rewind') || activeActions.has('forward')) stopScrub();
+  activeActions.clear();
+});
 
+// ---- Layout toggle ------------------------------------------------------
 // ---- Cell merges (vertical, within a single column) ----------------------
 // A merge covers the anchor row plus N rows immediately below it. Anchor
 // and covered rows must stay contiguous in state.rows — if a row gets
@@ -462,6 +635,7 @@ function doMerge() {
     alert('One of the selected cells is already part of a merge — unmerge it first.');
     return;
   }
+  pushUndo();
   const texts = rowIds
     .map((id) => (state.rows.find((r) => r.id === id).cells[colId] || '').trim())
     .filter(Boolean);
@@ -473,6 +647,7 @@ function doMerge() {
 }
 
 function doUnmerge(merge) {
+  pushUndo();
   state.merges = state.merges.filter((m) => m !== merge);
   render();
 }
@@ -507,6 +682,59 @@ function render() {
   renderBody();
   renderCodingPanel();
   applyFrozenColumns();
+  updateUndoRedoButtons();
+}
+
+// ---- Undo / redo (rows, columns, cell text, merges — not view prefs like
+// frozen/width/layout, which aren't "data" you'd expect Cmd/Ctrl+Z to touch) --
+const MAX_UNDO = 50;
+let undoStack = [];
+let redoStack = [];
+let pendingCellEdit = null; // captured on cell focus, committed on blur only if changed
+
+function snapshotState() {
+  return JSON.parse(JSON.stringify({ columns: state.columns, rows: state.rows, merges: state.merges }));
+}
+function commitUndoSnapshot(snapshot) {
+  undoStack.push(snapshot);
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack = [];
+  updateUndoRedoButtons();
+}
+function pushUndo() {
+  commitUndoSnapshot(snapshotState());
+}
+function resetUndoHistory() {
+  undoStack = [];
+  redoStack = [];
+  pendingCellEdit = null;
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshotState());
+  state = undoStack.pop();
+  render();
+  flashSaveStatus('Undid last change.');
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshotState());
+  state = redoStack.pop();
+  render();
+  flashSaveStatus('Redid last change.');
+}
+function updateUndoRedoButtons() {
+  const btnUndo = document.getElementById('btnUndo');
+  const btnRedo = document.getElementById('btnRedo');
+  if (btnUndo) btnUndo.disabled = !undoStack.length;
+  if (btnRedo) btnRedo.disabled = !redoStack.length;
+}
+function isUndoKey(e) {
+  return (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z';
+}
+function isRedoKey(e) {
+  const mod = e.metaKey || e.ctrlKey;
+  return mod && ((e.shiftKey && e.key.toLowerCase() === 'z') || (!e.shiftKey && e.key.toLowerCase() === 'y'));
 }
 
 // Pins user-chosen columns to the left edge of the grid while scrolling
@@ -514,7 +742,8 @@ function render() {
 // live DOM after render rather than assumed — each frozen column's `left`
 // is the summed width of the frozen columns before it.
 function applyFrozenColumns() {
-  let offset = 0;
+  const rmHeadCell = gridHeadRow.querySelector('.rowActionCol');
+  let offset = rmHeadCell ? rmHeadCell.getBoundingClientRect().width : 0;
   state.columns.forEach((col) => {
     const headCell = gridHeadRow.querySelector(`[data-col-id="${col.id}"]`);
     const bodyCells = gridBody.querySelectorAll(`[data-col-id="${col.id}"]`);
@@ -542,6 +771,12 @@ btnBackToTop.onclick = () => tableScroll.scrollTo({ top: 0, behavior: 'smooth' }
 
 function renderHead() {
   gridHeadRow.innerHTML = '';
+  const rmHeadCell = document.createElement('th');
+  rmHeadCell.className = 'rowActionCol';
+  rmHeadCell.style.width = '40px'; // table-layout:fixed needs every column sized explicitly
+  rmHeadCell.appendChild(Object.assign(document.createElement('span'), { className: 'visually-hidden', textContent: 'Row actions' }));
+  gridHeadRow.appendChild(rmHeadCell);
+
   state.columns.forEach((col) => {
     const th = document.createElement('th');
     th.dataset.colId = col.id;
@@ -581,7 +816,7 @@ function renderHead() {
     const nameInput = document.createElement('input');
     nameInput.value = col.name;
     nameInput.setAttribute('aria-label', `Rename column "${col.name}"`);
-    nameInput.onchange = () => { col.name = nameInput.value; renderCodingPanel(); };
+    nameInput.onchange = () => { pushUndo(); col.name = nameInput.value; renderCodingPanel(); };
     wrap.appendChild(nameInput);
 
     if (col.id !== 'time') {
@@ -592,6 +827,7 @@ function renderHead() {
       rm.title = 'Delete column';
       rm.onclick = () => {
         if (!confirm(`Delete column "${col.name}"?`)) return;
+        pushUndo();
         state.columns = state.columns.filter((c) => c.id !== col.id);
         state.rows.forEach((r) => delete r.cells[col.id]);
         state.merges = state.merges.filter((m) => m.colId !== col.id);
@@ -623,9 +859,6 @@ function renderHead() {
 
     gridHeadRow.appendChild(th);
   });
-  const rmHeadCell = document.createElement('th');
-  rmHeadCell.appendChild(Object.assign(document.createElement('span'), { className: 'visually-hidden', textContent: 'Row actions' }));
-  gridHeadRow.appendChild(rmHeadCell);
 }
 
 // Drops the dragged column immediately before the drop target, recomputing
@@ -634,6 +867,7 @@ function reorderColumn(draggedId, targetId) {
   const cols = state.columns;
   const fromIdx = cols.findIndex((c) => c.id === draggedId);
   if (fromIdx === -1) return;
+  pushUndo();
   const [moved] = cols.splice(fromIdx, 1);
   const toIdx = cols.findIndex((c) => c.id === targetId);
   cols.splice(toIdx === -1 ? cols.length : toIdx, 0, moved);
@@ -671,6 +905,17 @@ function renderBody() {
     const tr = document.createElement('tr');
     tr.dataset.rowId = row.id;
 
+    const rmTd = document.createElement('td');
+    rmTd.className = 'rowActionCol';
+    const rm = document.createElement('button');
+    rm.className = 'rmBtn';
+    rm.textContent = '✕';
+    rm.setAttribute('aria-label', `Delete row ${rowIndex + 1}`);
+    rm.title = 'Delete row';
+    rm.onclick = () => { pushUndo(); removeRow(row.id); render(); };
+    rmTd.appendChild(rm);
+    tr.appendChild(rmTd);
+
     state.columns.forEach((col) => {
       if (isCoveredCell(col.id, row.id)) return; // covered by a merge anchored above
 
@@ -687,20 +932,19 @@ function renderBody() {
         if (activeFilter && activeFilter.colId === col.id) applyFilter();
         renderCodingPanel();
       });
-      td.addEventListener('focus', () => { lastFocusedRowId = row.id; });
+      td.addEventListener('focus', () => {
+        lastFocusedRowId = row.id;
+        pendingCellEdit = { snapshot: snapshotState(), before: row.cells[col.id] || '' };
+      });
+      td.addEventListener('blur', () => {
+        if (pendingCellEdit && pendingCellEdit.before !== (row.cells[col.id] || '')) {
+          commitUndoSnapshot(pendingCellEdit.snapshot);
+        }
+        pendingCellEdit = null;
+      });
       td.addEventListener('mousedown', (e) => selectCell(col.id, row.id, e.shiftKey));
       tr.appendChild(td);
     });
-
-    const rmTd = document.createElement('td');
-    const rm = document.createElement('button');
-    rm.className = 'rmBtn';
-    rm.textContent = '✕';
-    rm.setAttribute('aria-label', `Delete row ${rowIndex + 1}`);
-    rm.title = 'Delete row';
-    rm.onclick = () => { removeRow(row.id); render(); };
-    rmTd.appendChild(rm);
-    tr.appendChild(rmTd);
 
     gridBody.appendChild(tr);
   });
@@ -733,11 +977,13 @@ function insertRow(cells = {}) {
 }
 
 document.getElementById('btnAddRow').onclick = () => {
+  pushUndo();
   insertRow();
   render();
 };
 
 document.getElementById('btnInsertTimestamp').onclick = () => {
+  pushUndo();
   const timeColId = findTimeColumnId();
   const row = insertRow(timeColId ? { [timeColId]: fmtTime(video.currentTime || 0) } : {});
   render();
@@ -750,6 +996,7 @@ document.getElementById('btnInsertTimestamp').onclick = () => {
 document.getElementById('btnAddCol').onclick = () => {
   const name = prompt('Column name (e.g. a code category like "Emotion" or "Topic"):');
   if (!name) return;
+  pushUndo();
   const col = { id: uid('c'), name };
   state.columns.push(col);
   render();
@@ -1127,6 +1374,7 @@ async function applyTranscriptContent(name, source) {
   currentTranscriptFileName = name;
   currentProjectFileName = null;
   activeFilter = null;
+  resetUndoHistory();
   render();
   transcriptStart.hidden = true;
 }
@@ -1152,6 +1400,7 @@ async function applyProjectJson(name, text) {
     // Legacy full project: transcript content was embedded directly.
     state = { columns: parsed.columns, rows: parsed.rows, merges: parsed.merges || [] };
     currentTranscriptFileName = null;
+    resetUndoHistory();
   } else if (parsed.transcriptFileName) {
     try {
       const res = await fetch(`/transcripts/${encodeURIComponent(parsed.transcriptFileName)}`);
@@ -1271,10 +1520,12 @@ document.getElementById('btnExportCopy').onclick = () => {
   a.click();
 };
 
+document.getElementById('btnUndo').onclick = undo;
+document.getElementById('btnRedo').onclick = redo;
+
 // ---- Init -------------------------------------------------------------
 state.rows.push(newRow());
-applyLayout();
-applyPinVideo();
+updateHeaderHeightVar();
 applyVideoWidth();
 renderShortcutHints();
 render();

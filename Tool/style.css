@@ -13,22 +13,26 @@
   --danger: #8c1f13;
   --radius: 10px;
   --video-width: 380px;
+  --header-height: 64px; /* fallback; JS measures the real height on load/resize */
 
   --font-display: 'Fraunces', Georgia, 'Iowan Old Style', serif;
   --font-body: 'Literata', Georgia, 'Iowan Old Style', serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+html, body { height: 100%; }
 html { background: var(--paper); }
 body {
   margin: 0;
-  min-height: 100vh;
   color: var(--ink);
   font: 15px/1.5 var(--font-body);
   background:
     radial-gradient(ellipse 900px 500px at 8% -10%, rgba(168,57,31,0.05), transparent 60%),
     var(--paper);
   background-attachment: fixed;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* the page itself never scrolls — only the transcript grid does */
 }
 
 h1, h2 { font-family: var(--font-display); font-weight: 600; margin: 0; }
@@ -81,6 +85,7 @@ h1, h2 { font-family: var(--font-display); font-weight: 600; margin: 0; }
   border-bottom: 1px solid var(--rule);
   box-shadow: 0 1px 0 rgba(36,29,21,0.03);
   animation: dropIn 0.4s ease both;
+  flex: 0 0 auto;
 }
 @keyframes dropIn {
   from { opacity: 0; transform: translateY(-6px); }
@@ -174,11 +179,19 @@ button { font: inherit; }
 .hint { color: var(--ink-soft); font-size: 12.5px; margin: 4px 0 0; }
 
 /* ---- Layout ---- */
+/* The whole app fits in one viewport (body has overflow:hidden above).
+   The transcript defaults to ~3/4 of the viewport, full width, but both
+   its width/height (via the Resize Transcript popover) and the video's
+   position (drag it) and size (the rail) are all user-adjustable — set up
+   the screen however you like instead of fighting one fixed arrangement. */
 #mainLayout {
   display: flex;
   align-items: flex-start;
   gap: 18px;
   padding: 22px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   animation: riseIn 0.45s 0.05s ease both;
 }
 @keyframes riseIn {
@@ -186,21 +199,43 @@ button { font: inherit; }
   to { opacity: 1; transform: translateY(0); }
 }
 
-#mainLayout.layout-side { flex-direction: row; }
-#mainLayout.layout-side #videoPanel { flex: 0 0 var(--video-width); position: sticky; top: 22px; }
-#mainLayout.layout-side #tablePanel { flex: 1; min-width: 0; }
+#tablePanel {
+  flex: 0 0 auto;
+  width: var(--table-width, 100%);
+  height: var(--table-height, 75vh);
+  max-width: 100%;
+}
+#codingPanel { flex: 0 0 240px; }
 
-#mainLayout.layout-stacked { flex-direction: column; align-items: stretch; }
-#mainLayout.layout-stacked #videoPanel { width: 100%; max-width: var(--video-width); margin: 0 auto; position: static; }
-#mainLayout.layout-stacked #tablePanel { width: 100%; }
-#mainLayout.layout-stacked #codingPanel { width: 100%; max-width: 640px; margin: 0 auto; position: static; }
-
-/* ---- Video panel ---- */
+/* ---- Video panel: floats above everything, draggable via its handle, so
+   it never permanently blocks any fixed part of the transcript. ---- */
 #videoPanel {
+  position: fixed;
+  top: calc(var(--header-height, 64px) + 22px);
+  left: 22px;
+  z-index: 70;
+  width: var(--video-width);
+  max-height: calc(100vh - var(--header-height, 64px) - 44px);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 16px;
+  box-shadow: 0 12px 30px rgba(36,29,21,0.18);
+}
+.videoDragHandle {
+  cursor: move;
+  margin: -16px -16px 10px -16px;
+  padding: 6px 10px;
+  background: var(--paper-alt);
+  border-radius: var(--radius) var(--radius) 0 0;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  user-select: none;
 }
 .videoEmpty {
   display: flex;
@@ -324,21 +359,42 @@ kbd {
   border-radius: var(--radius);
   padding: 14px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
+.transcriptStart { flex: 0 0 auto; }
 .tableToolbar {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
   flex-wrap: wrap;
+  flex: 0 0 auto;
 }
 .mergeHint { margin: 0; }
-/* Bounded, independently-scrolling grid — its own sticky header row (and
-   frozen columns) then stick relative to THIS box, not the page, so they
-   can never collide with the separately-pinned video panel while scrolling. */
+.tableSizeControl { position: relative; margin-left: auto; }
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 10px 24px rgba(36,29,21,0.15);
+  width: 200px;
+}
+.popover input[type="range"] { width: 100%; accent-color: var(--accent); margin-top: 4px; }
+.popover .btnGhost { margin-top: 4px; padding-left: 0; }
+/* The one scrollable region on the page — fills whatever space #tablePanel
+   has left after its toolbar. Its own sticky header row (and frozen
+   columns) stick relative to THIS box, not the page. */
 .tableScroll {
   overflow: auto;
-  max-height: 75vh;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 table {
@@ -411,6 +467,11 @@ tbody tr:nth-child(even) td { background: rgba(239,230,211,0.4); }
 .frozenCol { position: sticky; z-index: 2; background: var(--panel); box-shadow: 2px 0 4px rgba(36,29,21,0.06); }
 tbody tr:nth-child(even) td.frozenCol { background: var(--panel); }
 th.frozenCol { z-index: 3; }
+
+/* Delete-row column: always pinned to the left, above any frozen columns */
+.rowActionCol { position: sticky; left: 0; z-index: 4; background: var(--panel); text-align: center; }
+tbody tr:nth-child(even) td.rowActionCol { background: var(--panel); }
+th.rowActionCol { z-index: 6; }
 
 td[contenteditable] {
   outline: none;
@@ -614,8 +675,8 @@ tr.hiddenRow { display: none; }
 
 /* ---- Responsive ---- */
 @media (max-width: 860px) {
-  #mainLayout.layout-side { flex-direction: column; }
-  #mainLayout.layout-side #videoPanel { width: 100%; max-width: var(--video-width); margin: 0 auto; position: static; }
-  #mainLayout.layout-side #codingPanel { width: 100%; max-width: 640px; margin: 0 auto; position: static; }
+  #mainLayout { flex-direction: column; }
+  #tablePanel { height: 60vh; }
+  #codingPanel { flex: 0 0 auto; width: 100%; }
   .headerActions { margin-left: 0; }
 }
