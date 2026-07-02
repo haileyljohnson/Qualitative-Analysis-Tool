@@ -275,6 +275,14 @@ button { font: inherit; }
   font-size: 19px;
   font-weight: 600;
 }
+.playbackRateSelect {
+  font: 13px var(--font-mono);
+  padding: 4px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
 #videoNameLabel { word-break: break-word; }
 
 .shortcutDetails { margin-top: 12px; }

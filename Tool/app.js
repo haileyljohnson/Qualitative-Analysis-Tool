@@ -34,6 +34,7 @@ const videoControls = document.getElementById('videoControls');
 const videoNameLabel = document.getElementById('videoNameLabel');
 const videoSizeRange = document.getElementById('videoSizeRange');
 const videoSeekBar = document.getElementById('videoSeekBar');
+const playbackRateSelect = document.getElementById('playbackRateSelect');
 const videoPanel = document.getElementById('videoPanel');
 const tablePanel = document.getElementById('tablePanel');
 const playStatus = document.getElementById('playStatus');
@@ -107,6 +108,7 @@ function resetVideoUI(promptText) {
 
 function activateVideo(fileName, src) {
   video.src = src;
+  video.playbackRate = playbackRate;
   currentVideoFileName = fileName;
   videoEmpty.hidden = true;
   video.hidden = false;
@@ -114,6 +116,15 @@ function activateVideo(fileName, src) {
   videoNameLabel.textContent = fileName;
   renderShortcutHints();
 }
+
+// ---- Playback speed -------------------------------------------------------
+let playbackRate = parseFloat(localStorage.getItem('qualtool.playbackRate')) || 1;
+playbackRateSelect.value = String(playbackRate);
+playbackRateSelect.onchange = () => {
+  playbackRate = parseFloat(playbackRateSelect.value);
+  localStorage.setItem('qualtool.playbackRate', String(playbackRate));
+  video.playbackRate = playbackRate;
+};
 
 document.getElementById('btnOpenVideo').onclick = () => videoInput.click();
 document.getElementById('btnSwapVideo').onclick = () => resetVideoUI();

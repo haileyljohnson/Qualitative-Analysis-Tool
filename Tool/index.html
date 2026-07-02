@@ -68,6 +68,14 @@
       <input type="range" id="videoSeekBar" class="videoSeekBar" min="0" max="0" step="0.1" value="0" aria-label="Seek video">
       <div class="videoMeta">
         <span id="timeDisplay" class="timeDisplay">00:00:00.000</span>
+        <select id="playbackRateSelect" class="playbackRateSelect" aria-label="Playback speed">
+          <option value="0.5">0.5×</option>
+          <option value="0.75">0.75×</option>
+          <option value="1" selected>1.0×</option>
+          <option value="1.25">1.25×</option>
+          <option value="1.5">1.5×</option>
+          <option value="2">2.0×</option>
+        </select>
         <button id="btnSwapVideo" class="btnGhost" type="button">Load a different video…</button>
       </div>
       <p id="videoNameLabel" class="hint"></p>
