@@ -221,12 +221,18 @@ function updateTableSizeBounds() {
 }
 applyTableSize();
 
-document.getElementById('btnTableSize').onclick = () => {
+document.getElementById('btnTableSize').onclick = (e) => {
   const willShow = tableSizePopover.hidden;
   tableSizePopover.hidden = !willShow;
   document.getElementById('btnTableSize').setAttribute('aria-expanded', String(willShow));
-  if (willShow) updateTableSizeBounds();
+  if (willShow) {
+    updateTableSizeBounds();
+    positionPopover(tableSizePopover, e.currentTarget);
+  }
 };
+window.addEventListener('resize', () => {
+  if (!tableSizePopover.hidden) positionPopover(tableSizePopover, document.getElementById('btnTableSize'));
+});
 tableWidthRange.oninput = () => {
   tableWidth = parseInt(tableWidthRange.value, 10);
   localStorage.setItem('qualtool.tableWidth', String(tableWidth));
@@ -389,14 +395,75 @@ settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) closeSettings();
 });
 
-function trapFocus(e) {
-  const focusables = settingsDialog.querySelectorAll('button, [href], input, select, [tabindex]:not([tabindex="-1"])');
+function trapFocus(e, dialogEl) {
+  const focusables = dialogEl.querySelectorAll('button, [href], input, select, [tabindex]:not([tabindex="-1"])');
   if (!focusables.length) return;
   const first = focusables[0];
   const last = focusables[focusables.length - 1];
   if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 }
+
+// ---- Columns dialog: set type / delete somewhere more deliberate than
+// the small controls that used to live on each column header ------------
+const columnsOverlay = document.getElementById('columnsOverlay');
+const columnsDialog = document.getElementById('columnsDialog');
+const columnMgmtList = document.getElementById('columnMgmtList');
+
+function renderColumnMgmtList() {
+  columnMgmtList.innerHTML = '';
+  state.columns.forEach((col) => {
+    const li = document.createElement('li');
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'columnMgmtName';
+    nameSpan.textContent = col.name;
+    li.appendChild(nameSpan);
+
+    const typeSelect = document.createElement('select');
+    typeSelect.setAttribute('aria-label', `Type for column "${col.name}"`);
+    [['text', 'Text'], ['codes', 'Codes']].forEach(([value, label]) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      typeSelect.appendChild(opt);
+    });
+    typeSelect.value = col.type === 'codes' ? 'codes' : 'text';
+    typeSelect.onchange = () => {
+      pushUndo();
+      col.type = typeSelect.value;
+      render();
+      renderColumnMgmtList();
+    };
+    li.appendChild(typeSelect);
+
+    if (col.id !== 'time') {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btnGhost';
+      delBtn.type = 'button';
+      delBtn.textContent = 'Delete';
+      delBtn.onclick = () => { deleteColumn(col); renderColumnMgmtList(); };
+      li.appendChild(delBtn);
+    }
+
+    columnMgmtList.appendChild(li);
+  });
+}
+
+function openColumnsDialog() {
+  columnsOverlay.hidden = false;
+  renderColumnMgmtList();
+  document.getElementById('btnCloseColumns').focus();
+}
+function closeColumnsDialog() {
+  columnsOverlay.hidden = true;
+  document.getElementById('btnColumns').focus();
+}
+document.getElementById('btnColumns').onclick = openColumnsDialog;
+document.getElementById('btnCloseColumns').onclick = closeColumnsDialog;
+columnsOverlay.addEventListener('click', (e) => {
+  if (e.target === columnsOverlay) closeColumnsDialog();
+});
 
 // ---- Hold-key video shortcuts ------------------------------------------
 // ponytail: no reverse playback support in <video>, so rewind/FF are
@@ -413,7 +480,7 @@ function isEditingCell() {
 }
 
 function isGridCell(el) {
-  return !!el && el.tagName === 'TD' && el.isContentEditable && !!el.dataset.colId;
+  return !!el && el.tagName === 'TD' && !!el.dataset.colId;
 }
 
 function placeCursorAtEnd(el) {
@@ -435,7 +502,7 @@ function moveCellFocus(currentTd, rowDelta) {
     const targetTd = rows[rowIdx].querySelector(`td[data-col-id="${colId}"]`);
     if (targetTd) {
       targetTd.focus();
-      placeCursorAtEnd(targetTd);
+      if (targetTd.isContentEditable) placeCursorAtEnd(targetTd);
       return;
     }
     rowIdx += rowDelta;
@@ -485,7 +552,14 @@ function handleKeyDown(e) {
   // Settings dialog open but idle: Escape closes it, Tab stays trapped inside.
   if (!settingsOverlay.hidden) {
     if (e.key === 'Escape') { closeSettings(); return; }
-    if (e.key === 'Tab') trapFocus(e);
+    if (e.key === 'Tab') trapFocus(e, settingsDialog);
+    return;
+  }
+
+  // Columns dialog: same pattern.
+  if (!columnsOverlay.hidden) {
+    if (e.key === 'Escape') { closeColumnsDialog(); return; }
+    if (e.key === 'Tab') trapFocus(e, columnsDialog);
     return;
   }
 
@@ -584,6 +658,7 @@ function mergeSpan(colId, rowId) {
 let cellSelection = null; // { colId, rowIds: [...] } | null
 let selectionAnchorRowId = null;
 let draggedColId = null; // column currently being drag-reordered
+let suppressNextFocusSync = false; // a click already set selection via mousedown; don't let the resulting focus event clobber it
 
 function selectCell(colId, rowId, extend) {
   if (extend && cellSelection && cellSelection.colId === colId && selectionAnchorRowId) {
@@ -741,25 +816,27 @@ function isRedoKey(e) {
 // horizontally. Widths vary with content, so offsets are measured from the
 // live DOM after render rather than assumed — each frozen column's `left`
 // is the summed width of the frozen columns before it.
+// ponytail: renderBody() always builds fresh <td>s from scratch (no reuse),
+// so a newly-rendered cell never has .frozenCol/style.left in the first
+// place — there's nothing to "unfreeze". Only touching actually-frozen
+// columns turns this from an O(all columns × all rows) DOM walk (with a
+// forced layout read per column) into O(frozen columns) — the previous
+// version was doing that full walk on every render regardless of whether
+// any column was even frozen, which is what made large transcripts feel slow.
 function applyFrozenColumns() {
+  const frozenCols = state.columns.filter((c) => c.frozen);
+  if (!frozenCols.length) return;
   const rmHeadCell = gridHeadRow.querySelector('.rowActionCol');
   let offset = rmHeadCell ? rmHeadCell.getBoundingClientRect().width : 0;
-  state.columns.forEach((col) => {
+  frozenCols.forEach((col) => {
     const headCell = gridHeadRow.querySelector(`[data-col-id="${col.id}"]`);
     const bodyCells = gridBody.querySelectorAll(`[data-col-id="${col.id}"]`);
     const allCells = headCell ? [headCell, ...bodyCells] : [...bodyCells];
-    if (col.frozen) {
-      allCells.forEach((el) => {
-        el.classList.add('frozenCol');
-        el.style.left = `${offset}px`;
-      });
-      if (headCell) offset += headCell.getBoundingClientRect().width;
-    } else {
-      allCells.forEach((el) => {
-        el.classList.remove('frozenCol');
-        el.style.left = '';
-      });
-    }
+    allCells.forEach((el) => {
+      el.classList.add('frozenCol');
+      el.style.left = `${offset}px`;
+    });
+    if (headCell) offset += headCell.getBoundingClientRect().width;
   });
 }
 
@@ -768,6 +845,46 @@ tableScroll.addEventListener('scroll', () => {
   btnBackToTop.hidden = tableScroll.scrollTop < 300;
 });
 btnBackToTop.onclick = () => tableScroll.scrollTo({ top: 0, behavior: 'smooth' });
+
+// Deletes a column, wired up from both the Columns dialog and (if ever
+// needed again) anywhere else — one place owns the actual mutation.
+function deleteColumn(col) {
+  if (!confirm(`Delete column "${col.name}"?`)) return;
+  pushUndo();
+  state.columns = state.columns.filter((c) => c.id !== col.id);
+  state.rows.forEach((r) => delete r.cells[col.id]);
+  state.merges = state.merges.filter((m) => m.colId !== col.id);
+  if (activeFilter && activeFilter.colId === col.id) activeFilter = null;
+  render();
+}
+
+// Auto-sizes a column to fit its header text (measured, not guessed) plus
+// room for the drag handle/freeze checkbox — sticks only until the user
+// drags the column narrower/wider, at which point col.width takes over.
+// Canvas text measurement instead of a hidden-span-in-the-DOM: the span
+// approach requires a real layout pass (getBoundingClientRect forces one),
+// which is cheap in isolation but was forcing a full-page reflow on every
+// column of every render — brutal with a 1000+ row table already in the
+// DOM. Canvas measureText never touches layout at all. Cached by name
+// since a column's default width never changes unless it's renamed.
+let measureCtx = null;
+function measureTextWidth(text, font) {
+  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
+  measureCtx.font = font;
+  return measureCtx.measureText(text).width;
+}
+const columnWidthCache = new Map();
+function defaultColumnWidth(col) {
+  const upper = col.name.toUpperCase();
+  if (columnWidthCache.has(upper)) return columnWidthCache.get(upper);
+  const fontSize = 13;
+  const textWidth = measureTextWidth(upper, `600 ${fontSize}px 'Fraunces', Georgia, serif`);
+  const letterSpacing = fontSize * 0.03 * Math.max(0, upper.length - 1); // matches CSS letter-spacing: 0.03em
+  const chrome = 60; // drag handle + freeze checkbox + gaps + cell padding
+  const width = Math.max(70, Math.min(320, Math.round(textWidth + letterSpacing + chrome)));
+  columnWidthCache.set(upper, width);
+  return width;
+}
 
 function renderHead() {
   gridHeadRow.innerHTML = '';
@@ -780,7 +897,8 @@ function renderHead() {
   state.columns.forEach((col) => {
     const th = document.createElement('th');
     th.dataset.colId = col.id;
-    th.style.width = `${col.width || (col.id === 'time' ? 100 : 160)}px`;
+    if (col.type === 'codes') th.classList.add('codeColHeader');
+    th.style.width = `${col.width || defaultColumnWidth(col)}px`;
     const wrap = document.createElement('div');
     wrap.className = 'colHead';
 
@@ -819,23 +937,6 @@ function renderHead() {
     nameInput.onchange = () => { pushUndo(); col.name = nameInput.value; renderCodingPanel(); };
     wrap.appendChild(nameInput);
 
-    if (col.id !== 'time') {
-      const rm = document.createElement('button');
-      rm.className = 'rmBtn';
-      rm.textContent = '✕';
-      rm.setAttribute('aria-label', `Delete column "${col.name}"`);
-      rm.title = 'Delete column';
-      rm.onclick = () => {
-        if (!confirm(`Delete column "${col.name}"?`)) return;
-        pushUndo();
-        state.columns = state.columns.filter((c) => c.id !== col.id);
-        state.rows.forEach((r) => delete r.cells[col.id]);
-        state.merges = state.merges.filter((m) => m.colId !== col.id);
-        if (activeFilter && activeFilter.colId === col.id) activeFilter = null;
-        render();
-      };
-      wrap.appendChild(rm);
-    }
     th.appendChild(wrap);
 
     const handle = document.createElement('span');
@@ -920,29 +1021,46 @@ function renderBody() {
       if (isCoveredCell(col.id, row.id)) return; // covered by a merge anchored above
 
       const td = document.createElement('td');
-      td.contentEditable = 'true';
-      td.textContent = row.cells[col.id] || '';
       td.dataset.colId = col.id;
       td.setAttribute('aria-label', `${col.name}, row ${rowIndex + 1}`);
       if (col.id === 'time') td.classList.add('timeCell');
       const span = mergeSpan(col.id, row.id);
       if (span > 1) td.rowSpan = span;
-      td.addEventListener('input', () => {
-        row.cells[col.id] = td.textContent;
-        if (activeFilter && activeFilter.colId === col.id) applyFilter();
-        renderCodingPanel();
+
+      td.addEventListener('mousedown', (e) => {
+        suppressNextFocusSync = true;
+        selectCell(col.id, row.id, e.shiftKey);
       });
       td.addEventListener('focus', () => {
         lastFocusedRowId = row.id;
-        pendingCellEdit = { snapshot: snapshotState(), before: row.cells[col.id] || '' };
+        // A click already set selection via mousedown (above), including any
+        // shift-click range extension — don't stomp on it. Any OTHER way of
+        // landing here (Tab, Shift+Tab, the row-navigation hotkeys) should
+        // move the highlight to just this cell.
+        if (suppressNextFocusSync) suppressNextFocusSync = false;
+        else selectCell(col.id, row.id, false);
       });
-      td.addEventListener('blur', () => {
-        if (pendingCellEdit && pendingCellEdit.before !== (row.cells[col.id] || '')) {
-          commitUndoSnapshot(pendingCellEdit.snapshot);
-        }
-        pendingCellEdit = null;
-      });
-      td.addEventListener('mousedown', (e) => selectCell(col.id, row.id, e.shiftKey));
+
+      if (col.type === 'codes') {
+        renderCodeCell(td, row, col);
+      } else {
+        td.contentEditable = 'true';
+        td.textContent = row.cells[col.id] || '';
+        td.addEventListener('input', () => {
+          row.cells[col.id] = td.textContent;
+          if (activeFilter && activeFilter.colId === col.id) applyFilter();
+          renderCodingPanel();
+        });
+        td.addEventListener('focus', () => {
+          pendingCellEdit = { snapshot: snapshotState(), before: row.cells[col.id] || '' };
+        });
+        td.addEventListener('blur', () => {
+          if (pendingCellEdit && pendingCellEdit.before !== (row.cells[col.id] || '')) {
+            commitUndoSnapshot(pendingCellEdit.snapshot);
+          }
+          pendingCellEdit = null;
+        });
+      }
       tr.appendChild(td);
     });
 
@@ -1017,6 +1135,168 @@ codeColSelect.onchange = renderCodingPanel;
 
 function splitTags(text) {
   return (text || '').split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+// ---- Coding columns: chip display + Notion-style multi-select editor -----
+// Cell values stay plain comma-separated strings (same as before, and what
+// TSV/CSV/XLS export already expects) — only the editing UI changes. The
+// list of "known" codes for a column isn't stored separately; it's derived
+// live from whatever's already used anywhere in that column.
+function allTagsForColumn(colId) {
+  const set = new Set();
+  state.rows.forEach((r) => splitTags(r.cells[colId]).forEach((t) => set.add(t)));
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+function renderCodeCell(td, row, col) {
+  td.classList.add('codeCell');
+  td.tabIndex = 0;
+  const tags = splitTags(row.cells[col.id]);
+  const chipWrap = document.createElement('div');
+  chipWrap.className = 'chipWrap';
+  tags.forEach((tag) => {
+    const chip = document.createElement('span');
+    chip.className = 'tagChip';
+    chip.textContent = tag;
+    chipWrap.appendChild(chip);
+  });
+  const addBtn = document.createElement('span');
+  addBtn.className = 'chipAddBtn';
+  addBtn.textContent = tags.length ? '+' : '+ Add code';
+  chipWrap.appendChild(addBtn);
+  td.appendChild(chipWrap);
+
+  const open = (e) => { e.preventDefault(); openCodeCellEditor(td, row, col); };
+  td.addEventListener('click', open);
+  td.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') open(e);
+  });
+}
+
+let openCodeEditor = null;
+let currentCodeEditorCommit = null;
+
+function closeCodeCellEditor() {
+  document.removeEventListener('mousedown', handleCodeEditorOutsideClick, true);
+  if (!openCodeEditor) return;
+  if (currentCodeEditorCommit) currentCodeEditorCommit();
+  currentCodeEditorCommit = null;
+  openCodeEditor.remove();
+  openCodeEditor = null;
+  render();
+}
+function handleCodeEditorOutsideClick(e) {
+  // Catches clicks on non-focusable areas (focusout below won't fire for those).
+  if (openCodeEditor && !openCodeEditor.contains(e.target)) closeCodeCellEditor();
+}
+
+function openCodeCellEditor(td, row, col) {
+  if (openCodeEditor) closeCodeCellEditor();
+  const preSnapshot = snapshotState();
+  const selected = new Set(splitTags(row.cells[col.id]));
+  let changed = false;
+
+  const popover = document.createElement('div');
+  popover.className = 'codePopover';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Search or create a code…';
+  popover.appendChild(input);
+  const list = document.createElement('div');
+  list.className = 'codeOptionList';
+  popover.appendChild(list);
+
+  function toggle(tag) {
+    if (selected.has(tag)) selected.delete(tag); else selected.add(tag);
+    changed = true;
+    row.cells[col.id] = [...selected].join(', ');
+    renderOptions();
+  }
+
+  function renderOptions() {
+    list.innerHTML = '';
+    const query = input.value.trim();
+    const queryLower = query.toLowerCase();
+    const all = allTagsForColumn(col.id);
+    if (query && !all.some((t) => t.toLowerCase() === queryLower)) {
+      const createRow = document.createElement('button');
+      createRow.type = 'button';
+      createRow.className = 'codeOptionRow codeOptionCreate';
+      createRow.textContent = `+ Create "${query}"`;
+      createRow.onclick = () => { toggle(query); input.value = ''; input.focus(); renderOptions(); };
+      list.appendChild(createRow);
+    }
+    all.filter((t) => t.toLowerCase().includes(queryLower)).forEach((tag) => {
+      const optBtn = document.createElement('button');
+      optBtn.type = 'button';
+      optBtn.className = 'codeOptionRow' + (selected.has(tag) ? ' codeOptionSelected' : '');
+      optBtn.innerHTML = `<span class="codeOptionCheck">${selected.has(tag) ? '✓' : ''}</span>${tag}`;
+      optBtn.onclick = () => toggle(tag);
+      list.appendChild(optBtn);
+    });
+    if (!query && !all.length) {
+      const empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.style.margin = '4px 2px';
+      empty.textContent = 'Type to create the first code.';
+      list.appendChild(empty);
+    }
+  }
+
+  input.addEventListener('input', renderOptions);
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation(); // don't let video shortcuts leak through while typing here
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const query = input.value.trim();
+      if (!query) return;
+      const all = allTagsForColumn(col.id);
+      const exact = all.find((t) => t.toLowerCase() === query.toLowerCase());
+      toggle(exact || query);
+      input.value = '';
+    } else if (e.key === 'Escape') {
+      closeCodeCellEditor();
+    } else if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      // Moving to another row (even by hotkey) closes the popup — nothing
+      // has to be chosen first.
+      e.preventDefault();
+      const rowId = td.closest('tr').dataset.rowId;
+      const colId = td.dataset.colId;
+      closeCodeCellEditor();
+      const freshTd = gridBody.querySelector(`tr[data-row-id="${rowId}"] td[data-col-id="${colId}"]`);
+      if (freshTd) moveCellFocus(freshTd, e.key === 'ArrowUp' ? -1 : 1);
+    }
+  });
+  // Any focus change that leaves the popover entirely (Tab, clicking a
+  // different cell, clicking another focusable control) closes it too.
+  popover.addEventListener('focusout', (e) => {
+    if (e.relatedTarget && popover.contains(e.relatedTarget)) return;
+    closeCodeCellEditor();
+  });
+
+  renderOptions();
+  document.body.appendChild(popover); // fixed + body-level so it can't be clipped by the grid's own scroll region
+  positionPopover(popover, td);
+  openCodeEditor = popover;
+  currentCodeEditorCommit = () => { if (changed) commitUndoSnapshot(preSnapshot); };
+  input.focus();
+  document.addEventListener('mousedown', handleCodeEditorOutsideClick, true);
+  tableScroll.addEventListener('scroll', closeCodeCellEditor, { once: true });
+}
+
+function positionPopover(popover, anchorEl) {
+  const rect = anchorEl.getBoundingClientRect();
+  const width = 220;
+  let left = Math.min(rect.left, window.innerWidth - width - 10);
+  left = Math.max(10, left);
+  popover.style.left = `${left}px`;
+  popover.style.top = `${rect.bottom + 4}px`;
+  requestAnimationFrame(() => {
+    const popRect = popover.getBoundingClientRect();
+    if (popRect.bottom > window.innerHeight - 10) {
+      popover.style.top = `${Math.max(10, rect.top - popRect.height - 4)}px`;
+    }
+  });
 }
 
 function renderCodingPanel() {
@@ -1510,15 +1790,21 @@ projectInput.onchange = async () => {
 };
 
 // ---- Export a standalone copy (browser download, not saved to a folder) --
-document.getElementById('btnExportCopy').onclick = () => {
-  const blob = new Blob([stateToXls()], { type: 'application/vnd.ms-excel' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = currentTranscriptFileName
-    ? currentTranscriptFileName.replace(/\.(tsv|csv)$/i, '.xls')
-    : 'transcript.xls';
-  a.click();
-};
+// Guarded: this button is currently commented out in index.html, and one
+// missing element here would otherwise throw and halt every script line
+// after it (including Undo/Redo wiring and the initial render below).
+const btnExportCopy = document.getElementById('btnExportCopy');
+if (btnExportCopy) {
+  btnExportCopy.onclick = () => {
+    const blob = new Blob([stateToXls()], { type: 'application/vnd.ms-excel' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = currentTranscriptFileName
+      ? currentTranscriptFileName.replace(/\.(tsv|csv)$/i, '.xls')
+      : 'transcript.xls';
+    a.click();
+  };
+}
 
 document.getElementById('btnUndo').onclick = undo;
 document.getElementById('btnRedo').onclick = redo;

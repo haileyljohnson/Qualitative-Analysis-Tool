@@ -27,7 +27,7 @@
       <button id="btnSaveTranscript" class="btn" type="button">Save Transcript</button>
       <button id="btnSaveProject" class="btn" type="button">Save Project</button>
       <button id="btnOpenProject" class="btn" type="button">Open Project</button>
-      <button id="btnExportCopy" class="btn" type="button">Export Copy</button>
+      <!-- <button id="btnExportCopy" class="btn" type="button">Export Copy</button> -->
     </div>
     <p id="saveStatus" class="hint" role="status" aria-live="polite"></p>
 
@@ -35,6 +35,8 @@
       <button id="btnToggleCoding" class="btn" type="button" aria-pressed="false" aria-controls="codingPanel">
         Coding Panel
       </button>
+      <button id="btnColumns" class="btn" type="button" aria-haspopup="dialog" aria-controls="columnsDialog">Columns</button>
+      <button id="btnTableSize" class="btn" type="button" aria-expanded="false" aria-controls="tableSizePopover">Resize Transcript</button>
     </div>
 
     <button id="btnSettings" class="btn btnIcon" type="button" aria-haspopup="dialog" aria-controls="settingsDialog" title="Shortcuts &amp; settings">
@@ -65,7 +67,7 @@
     <div id="videoControls" hidden>
       <input type="range" id="videoSeekBar" class="videoSeekBar" min="0" max="0" step="0.1" value="0" aria-label="Seek video">
       <div class="videoMeta">
-        <span id="timeDisplay" class="timeDisplay">0:00.0</span>
+        <span id="timeDisplay" class="timeDisplay">0:00:00.0</span>
         <button id="btnSwapVideo" class="btnGhost" type="button">Load a different video…</button>
       </div>
       <p id="videoNameLabel" class="hint"></p>
@@ -96,19 +98,6 @@
       <button id="btnRedo" class="btn btnSmall" type="button" disabled title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
       <button id="btnMergeCells" class="btn btnSmall" type="button" disabled>Merge Cells</button>
       <span class="hint mergeHint">Click a cell, shift-click another in the same column to select a range to merge.</span>
-
-      <div class="tableSizeControl">
-        <button id="btnTableSize" class="btn btnSmall" type="button" aria-expanded="false" aria-controls="tableSizePopover">Resize Transcript</button>
-        <div id="tableSizePopover" class="popover" hidden>
-          <label class="fieldLabel">Width
-            <input type="range" id="tableWidthRange" min="300" max="2000" step="10">
-          </label>
-          <label class="fieldLabel">Height
-            <input type="range" id="tableHeightRange" min="200" max="1200" step="10">
-          </label>
-          <button id="btnTableSizeReset" class="btnGhost" type="button">Reset to default</button>
-        </div>
-      </div>
     </div>
     <div class="tableScroll">
       <table id="grid">
@@ -132,12 +121,24 @@
 <div id="settingsOverlay" class="overlay" hidden>
   <div id="settingsDialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <h2 id="settingsTitle">Keyboard shortcuts</h2>
-    <p class="dialogHint">Click "Change", then press the key(s) you want — hold a modifier like Shift and tap a letter (e.g. Shift+W) for a combo. Play always pauses and rewinds 0.5s on release.</p>
+    <p class="dialogHint">Click "Change", then press the key(s) you want. Hold a modifier like Shift and tap a letter (e.g. Shift+W) for a combo. Play always pauses and rewinds 0.5s on release.</p>
     <p id="shortcutMsg" class="shortcutMsg" role="status"></p>
     <ul class="shortcutList" id="shortcutList"></ul>
     <div class="dialogActions">
       <button id="btnResetShortcuts" class="btnGhost" type="button">Reset to defaults</button>
       <button id="btnCloseSettings" class="btn btnPrimary" type="button">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="columnsOverlay" class="overlay" hidden>
+  <div id="columnsDialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="columnsTitle">
+    <h2 id="columnsTitle">Columns</h2>
+    <p class="dialogHint">Set each column's type, or delete one.</p>
+    <ul class="columnMgmtList" id="columnMgmtList"></ul>
+    <div class="dialogActions">
+      <span></span>
+      <button id="btnCloseColumns" class="btn btnPrimary" type="button">Done</button>
     </div>
   </div>
 </div>
@@ -150,6 +151,19 @@
 </div>
 
 <button id="btnBackToTop" class="backToTop" type="button" hidden>&uarr; Top</button>
+
+<!-- Body-level (not nested in the header) so it can't get trapped behind
+     the transcript by a stacking-context quirk — same reason the video
+     panel and code-cell popover live at this level too. -->
+<div id="tableSizePopover" class="popover" hidden>
+  <label class="fieldLabel">Width
+    <input type="range" id="tableWidthRange" min="300" max="2000" step="10">
+  </label>
+  <label class="fieldLabel">Height
+    <input type="range" id="tableHeightRange" min="200" max="1200" step="10">
+  </label>
+  <button id="btnTableSizeReset" class="btnGhost" type="button">Reset to default</button>
+</div>
 
 <script src="app.js"></script>
 </body>

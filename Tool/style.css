@@ -11,6 +11,10 @@
   --accent-hover: #8a2e18;
   --accent-tint: #f4e2b8;
   --danger: #8c1f13;
+  --code-header: #c9dab3;
+  --code-cell: #eef3e3;
+  --code-accent: #5d7a3d;
+  --code-accent-tint: #dbe8c8;
   --radius: 10px;
   --video-width: 380px;
   --header-height: 64px; /* fallback; JS measures the real height on load/resize */
@@ -88,8 +92,8 @@ h1, h2 { font-family: var(--font-display); font-weight: 600; margin: 0; }
   flex: 0 0 auto;
 }
 @keyframes dropIn {
-  from { opacity: 0; transform: translateY(-6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .brand { display: flex; align-items: center; gap: 10px; }
@@ -195,12 +199,12 @@ button { font: inherit; }
   animation: riseIn 0.45s 0.05s ease both;
 }
 @keyframes riseIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 #tablePanel {
-  flex: 0 0 auto;
+  flex: 0 1 auto; /* shrink to make room for the Coding Panel instead of overflowing */
   width: var(--table-width, 100%);
   height: var(--table-height, 75vh);
   max-width: 100%;
@@ -373,12 +377,14 @@ kbd {
   flex: 0 0 auto;
 }
 .mergeHint { margin: 0; }
-.tableSizeControl { position: relative; margin-left: auto; }
+/* position:fixed, not absolute — sticky table headers have their own
+   internal stacking behavior in some browsers and can paint above a
+   plain absolutely-positioned popover regardless of z-index. Fixed
+   positioning (computed from the button in JS) sidesteps that entirely,
+   same approach as the code-cell popover. */
 .popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 20;
+  position: fixed;
+  z-index: 90;
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: 10px;
@@ -461,8 +467,86 @@ th input {
   border-radius: 4px;
 }
 th input:hover { background: rgba(36,29,21,0.05); }
+.colTypeSelect {
+  font: 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--panel);
+  padding: 1px 2px;
+}
 
 tbody tr:nth-child(even) td { background: rgba(239,230,211,0.4); }
+
+/* ---- Coding columns: green so they read as distinct from text columns at
+   a glance (yellow/tan) — this is now the primary way to tell a column's
+   type apart, since type is set from the Columns dialog, not on the
+   header itself. ---- */
+th.codeColHeader { background: var(--code-header); }
+td.codeCell, tbody tr:nth-child(even) td.codeCell { background: var(--code-cell); }
+td.codeCell { position: relative; cursor: pointer; overflow: visible; }
+td.codeCell:focus-visible { outline: 2px solid var(--code-accent); outline-offset: -2px; }
+.chipWrap { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 20px; }
+.tagChip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--code-accent-tint);
+  color: var(--ink);
+  font-size: 12px;
+  border: 1px solid var(--code-accent);
+  white-space: nowrap;
+}
+.chipAddBtn {
+  display: inline-block;
+  border: 1px dashed var(--rule);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+td.codeCell:hover .chipAddBtn { border-color: var(--code-accent); color: var(--code-accent); }
+
+.codePopover {
+  position: fixed;
+  z-index: 80;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(36,29,21,0.18);
+  padding: 8px;
+  width: 220px;
+  cursor: default;
+}
+.codePopover input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font: 13px var(--font-body);
+  margin-bottom: 6px;
+}
+.codeOptionList { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.codeOptionRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font: 13px var(--font-body);
+  color: var(--ink);
+}
+.codeOptionRow:hover { background: var(--paper-alt); }
+.codeOptionSelected { background: var(--code-accent-tint); }
+.codeOptionCheck { width: 14px; flex-shrink: 0; color: var(--code-accent); font-weight: 600; }
+.codeOptionCreate { color: var(--code-accent); font-weight: 600; }
 
 .frozenCol { position: sticky; z-index: 2; background: var(--panel); box-shadow: 2px 0 4px rgba(36,29,21,0.06); }
 tbody tr:nth-child(even) td.frozenCol { background: var(--panel); }
@@ -607,6 +691,30 @@ tr.hiddenRow { display: none; }
   justify-content: space-between;
   align-items: center;
   margin-top: 6px;
+}
+
+.columnMgmtList {
+  list-style: none;
+  margin: 14px 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.columnMgmtList li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.columnMgmtList li:last-child { border-bottom: none; }
+.columnMgmtName { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.columnMgmtList select {
+  font: 13px var(--font-body);
+  padding: 4px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
 }
 
 /* ---- Stationary video-size rail (left edge, independent of the panel it resizes) ---- */

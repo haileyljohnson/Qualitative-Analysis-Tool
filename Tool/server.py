@@ -123,16 +123,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.end_headers()
 
-        with open(full, "rb") as f:
-            f.seek(start)
-            remaining = end - start + 1
-            chunk = 256 * 1024
-            while remaining > 0:
-                data = f.read(min(chunk, remaining))
-                if not data:
-                    break
-                self.wfile.write(data)
-                remaining -= len(data)
+        try:
+            with open(full, "rb") as f:
+                f.seek(start)
+                remaining = end - start + 1
+                chunk = 256 * 1024
+                while remaining > 0:
+                    data = f.read(min(chunk, remaining))
+                    if not data:
+                        break
+                    self.wfile.write(data)
+                    remaining -= len(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # the browser aborted this request (e.g. seeking cut it short) — not an error
 
     def log_message(self, fmt, *args):
         pass  # ponytail: quiet by default, this runs in a window the user keeps open
