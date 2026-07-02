@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qualitative Analysis — local transcription &amp; coding</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Literata:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<a class="skipLink" href="#tablePanel">Skip to transcript</a>
+
+<header class="siteHeader">
+  <div class="brand">
+    <span class="brandMark" aria-hidden="true">Q</span>
+    <div>
+      <h1>Qualitative Analysis</h1>
+      <p class="tagline">local transcription &amp; coding</p>
+    </div>
+  </div>
+
+  <div class="headerActions">
+    <div class="btnGroup" role="group" aria-label="Project">
+      <button id="btnSaveTranscript" class="btn" type="button">Save Transcript</button>
+      <button id="btnSaveProject" class="btn" type="button">Save Project</button>
+      <button id="btnOpenProject" class="btn" type="button">Open</button>
+      <button id="btnExportCopy" class="btn" type="button">Export Copy</button>
+    </div>
+    <p id="saveStatus" class="hint" role="status" aria-live="polite"></p>
+
+    <div class="btnGroup" role="group" aria-label="View">
+      <button id="btnLayoutToggle" class="btn" type="button" aria-pressed="false">
+        Layout: <span id="layoutLabel">Side by side</span>
+      </button>
+      <button id="btnPinVideo" class="btn" type="button" aria-pressed="true">Pin Video</button>
+      <button id="btnToggleCoding" class="btn" type="button" aria-pressed="false" aria-controls="codingPanel">
+        Coding Panel
+      </button>
+    </div>
+
+    <button id="btnSettings" class="btn btnIcon" type="button" aria-haspopup="dialog" aria-controls="settingsDialog" title="Shortcuts &amp; settings">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2" fill="currentColor" stroke="none"/>
+        <line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/>
+        <line x1="4" y1="18" x2="20" y2="18"/><circle cx="7" cy="18" r="2" fill="currentColor" stroke="none"/>
+      </svg>
+      <span class="visually-hidden">Shortcuts &amp; settings</span>
+    </button>
+  </div>
+
+  <input type="file" id="projectInput" accept=".json,.xlsx,.xls,.tsv,.csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/tab-separated-values,text/csv" hidden>
+</header>
+
+<main id="mainLayout" class="layout-side">
+  <section id="videoPanel" aria-label="Video player">
+    <div id="videoEmpty" class="videoEmpty">
+      <p id="videoEmptyText">Load a video to start transcribing.</p>
+      <ul id="videoList" class="fileList"></ul>
+      <button id="btnOpenVideo" class="btn btnPrimary" type="button">Browse for a video…</button>
+      <input type="file" id="videoInput" accept="video/*" hidden>
+    </div>
+
+    <video id="video" hidden></video>
+
+    <div id="videoControls" hidden>
+      <input type="range" id="videoSeekBar" class="videoSeekBar" min="0" max="0" step="0.1" value="0" aria-label="Seek video">
+      <div class="videoMeta">
+        <span id="timeDisplay" class="timeDisplay">0:00.0</span>
+        <button id="btnSwapVideo" class="btnGhost" type="button">Load a different video…</button>
+      </div>
+      <p id="videoNameLabel" class="hint"></p>
+      <p id="playStatus" class="visually-hidden" aria-live="polite">Paused</p>
+
+      <details class="shortcutDetails">
+        <summary>Keyboard shortcuts</summary>
+        <ul class="shortcutHints" id="shortcutHints" aria-label="Video keyboard shortcuts"></ul>
+        <p class="hint">Disabled while editing a cell. Change keys any time via <button id="btnSettingsInline" class="linkBtn" type="button">Settings</button>.</p>
+      </details>
+    </div>
+  </section>
+
+  <section id="tablePanel" aria-label="Transcript">
+    <div id="transcriptStart" class="transcriptStart">
+      <div class="transcriptStartHead">
+        <p class="hint">Transcripts folder:</p>
+        <button id="btnDismissTranscriptStart" class="rmBtn" type="button" aria-label="Dismiss transcripts list">✕</button>
+      </div>
+      <ul id="transcriptList" class="fileList"></ul>
+      <button id="btnOpenProject2" class="btnGhost" type="button">Browse for a transcript file…</button>
+    </div>
+    <div class="tableToolbar">
+      <button id="btnAddRow" class="btn btnSmall" type="button">+ Row</button>
+      <button id="btnInsertTimestamp" class="btn btnSmall" type="button">+ Row at current time</button>
+      <button id="btnAddCol" class="btn btnSmall" type="button">+ Column</button>
+      <button id="btnMergeCells" class="btn btnSmall" type="button" disabled>Merge Cells</button>
+      <span class="hint mergeHint">Click a cell, shift-click another in the same column to select a range to merge.</span>
+    </div>
+    <div class="tableScroll">
+      <table id="grid">
+        <caption class="visually-hidden">Transcript. Click any cell to edit it directly. Add columns for speakers, behaviors, notes, or codes.</caption>
+        <thead><tr id="gridHeadRow"></tr></thead>
+        <tbody id="gridBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside id="codingPanel" aria-label="Coding: filter and counts" hidden>
+    <h2>Coding: filter &amp; counts</h2>
+    <label class="fieldLabel">Column
+      <select id="codeColSelect"></select>
+    </label>
+    <div id="codeCounts" role="group" aria-label="Code tags"></div>
+    <button id="btnClearFilter" class="btnGhost" type="button">Clear filter</button>
+  </aside>
+</main>
+
+<div id="settingsOverlay" class="overlay" hidden>
+  <div id="settingsDialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <h2 id="settingsTitle">Keyboard shortcuts</h2>
+    <p class="dialogHint">Click "Change", then press the key you want. Play always pauses and rewinds 0.5s on release.</p>
+    <p id="shortcutMsg" class="shortcutMsg" role="status"></p>
+    <ul class="shortcutList" id="shortcutList"></ul>
+    <div class="dialogActions">
+      <button id="btnResetShortcuts" class="btnGhost" type="button">Reset to defaults</button>
+      <button id="btnCloseSettings" class="btn btnPrimary" type="button">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="videoSizeRail" aria-label="Video size">
+  <span class="videoSizeRailLabel">Size</span>
+  <div class="videoSizeSliderWrap">
+    <input type="range" id="videoSizeRange" min="220" max="960" step="10">
+  </div>
+</div>
+
+<button id="btnBackToTop" class="backToTop" type="button" hidden>&uarr; Top</button>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1282 @@
+// ---- State ----------------------------------------------------------
+// `state` is just the transcript grid (columns + rows). Which video and
+// which files-on-disk it's paired with are tracked separately below, so a
+// saved project is a small { video, transcript } pointer, not a copy of
+// the whole transcript.
+let state = {
+  columns: [
+    { id: 'time', name: 'Time' },
+    { id: 'speaker', name: 'Speaker' },
+    { id: 'transcript', name: 'Transcript' },
+    { id: 'behaviors', name: 'Behaviors' },
+    { id: 'notes', name: 'Notes' },
+  ],
+  rows: [],
+  merges: [], // [{ colId, anchorRowId, coveredRowIds: [...] }] — vertical cell merges
+};
+let nextId = 1;
+const uid = (prefix) => `${prefix}${nextId++}`;
+
+let activeFilter = null; // { colId, tag } | null
+let lastFocusedRowId = null; // so "+ Row" inserts after wherever you're typing, not at the end
+
+let currentVideoFileName = null;      // name of the loaded file in ./videos
+let currentTranscriptFileName = null; // name of the loaded file in ./transcripts
+let currentProjectFileName = null;    // name of the loaded file in ./projects
+
+// ---- Elements ---------------------------------------------------------
+const video = document.getElementById('video');
+const videoInput = document.getElementById('videoInput');
+const videoEmpty = document.getElementById('videoEmpty');
+const videoEmptyText = document.getElementById('videoEmptyText');
+const videoList = document.getElementById('videoList');
+const videoControls = document.getElementById('videoControls');
+const videoNameLabel = document.getElementById('videoNameLabel');
+const videoSizeRange = document.getElementById('videoSizeRange');
+const videoSeekBar = document.getElementById('videoSeekBar');
+const videoPanel = document.getElementById('videoPanel');
+const btnPinVideo = document.getElementById('btnPinVideo');
+const playStatus = document.getElementById('playStatus');
+const timeDisplay = document.getElementById('timeDisplay');
+const shortcutHints = document.getElementById('shortcutHints');
+const gridHeadRow = document.getElementById('gridHeadRow');
+const gridBody = document.getElementById('gridBody');
+const tableScroll = document.querySelector('.tableScroll');
+const btnBackToTop = document.getElementById('btnBackToTop');
+const codingPanel = document.getElementById('codingPanel');
+const codeColSelect = document.getElementById('codeColSelect');
+const codeCounts = document.getElementById('codeCounts');
+const projectInput = document.getElementById('projectInput');
+const transcriptStart = document.getElementById('transcriptStart');
+const transcriptList = document.getElementById('transcriptList');
+const mainLayout = document.getElementById('mainLayout');
+const btnLayoutToggle = document.getElementById('btnLayoutToggle');
+const layoutLabel = document.getElementById('layoutLabel');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsDialog = document.getElementById('settingsDialog');
+const shortcutList = document.getElementById('shortcutList');
+const shortcutMsg = document.getElementById('shortcutMsg');
+
+// ---- Local file lists (served by server.py from ./videos and ./transcripts) --
+async function fetchFileList(kind) {
+  try {
+    const res = await fetch(`/api/list?dir=${kind}`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (e) {
+    return []; // no server (e.g. index.html opened directly) — lists just stay empty
+  }
+}
+
+let lastVideoList = [];
+async function refreshVideoList() {
+  lastVideoList = await fetchFileList('videos');
+  videoList.innerHTML = '';
+  lastVideoList.forEach((name) => {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = name;
+    btn.onclick = () => activateVideo(name, `/videos/${encodeURIComponent(name)}`);
+    li.appendChild(btn);
+    videoList.appendChild(li);
+  });
+}
+
+async function refreshTranscriptList() {
+  const names = await fetchFileList('transcripts');
+  transcriptList.innerHTML = '';
+  names.forEach((name) => {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = name;
+    btn.onclick = () => loadTranscriptFromServer(name);
+    li.appendChild(btn);
+    transcriptList.appendChild(li);
+  });
+  if (!names.length) transcriptStart.hidden = true;
+}
+
+// ---- Video loading ----------------------------------------------------
+function resetVideoUI(promptText) {
+  video.hidden = true;
+  video.removeAttribute('src');
+  videoControls.hidden = true;
+  videoEmpty.hidden = false;
+  videoEmptyText.textContent = promptText || 'Load a video to start transcribing.';
+  refreshVideoList();
+}
+
+function activateVideo(fileName, src) {
+  video.src = src;
+  currentVideoFileName = fileName;
+  videoEmpty.hidden = true;
+  video.hidden = false;
+  videoControls.hidden = false;
+  videoNameLabel.textContent = fileName;
+  renderShortcutHints();
+}
+
+document.getElementById('btnOpenVideo').onclick = () => videoInput.click();
+document.getElementById('btnSwapVideo').onclick = () => resetVideoUI();
+videoInput.onchange = () => {
+  const file = videoInput.files[0];
+  if (!file) return;
+  activateVideo(file.name, URL.createObjectURL(file));
+};
+
+function fmtTime(t) {
+  const m = Math.floor(t / 60);
+  const s = (t % 60).toFixed(1).padStart(4, '0');
+  return `${m}:${s}`;
+}
+video.addEventListener('loadedmetadata', () => {
+  videoSeekBar.max = String(video.duration || 0);
+});
+video.addEventListener('timeupdate', () => {
+  timeDisplay.textContent = fmtTime(video.currentTime || 0);
+  videoSeekBar.value = String(video.currentTime || 0);
+});
+video.addEventListener('play', () => { playStatus.textContent = 'Playing'; });
+video.addEventListener('pause', () => { playStatus.textContent = 'Paused'; });
+videoSeekBar.addEventListener('input', () => {
+  video.currentTime = parseFloat(videoSeekBar.value);
+});
+
+// ---- Pin video (stays in view while the transcript scrolls) -------------
+let pinVideo = localStorage.getItem('qualtool.pinVideo') !== 'false';
+function applyPinVideo() {
+  videoPanel.style.position = pinVideo ? 'sticky' : 'static';
+  videoPanel.style.top = pinVideo ? '22px' : 'auto';
+  videoPanel.style.zIndex = pinVideo ? '70' : ''; // above the grid, frozen columns, size rail, back-to-top
+  btnPinVideo.setAttribute('aria-pressed', String(pinVideo));
+}
+btnPinVideo.onclick = () => {
+  pinVideo = !pinVideo;
+  localStorage.setItem('qualtool.pinVideo', String(pinVideo));
+  applyPinVideo();
+};
+
+// ---- Video size ---------------------------------------------------------
+let videoWidth = parseInt(localStorage.getItem('qualtool.videoWidth'), 10) || 380;
+function updateVideoSizeMax() {
+  const max = Math.max(220, window.innerWidth - 60); // leave room for the rail itself
+  videoSizeRange.max = String(max);
+  if (videoWidth > max) videoWidth = max;
+}
+function applyVideoWidth() {
+  updateVideoSizeMax();
+  document.documentElement.style.setProperty('--video-width', `${videoWidth}px`);
+  videoSizeRange.value = String(videoWidth);
+}
+videoSizeRange.oninput = () => {
+  videoWidth = parseInt(videoSizeRange.value, 10);
+  localStorage.setItem('qualtool.videoWidth', String(videoWidth));
+  applyVideoWidth();
+};
+window.addEventListener('resize', applyVideoWidth);
+
+// ---- Rebindable shortcuts ------------------------------------------
+const DEFAULT_BINDINGS = { play: 'ArrowUp', rewind: 'ArrowLeft', forward: 'ArrowRight' };
+const ACTION_LABELS = { play: 'Play / Pause', rewind: 'Rewind', forward: 'Fast-forward' };
+const ACTION_HINTS = {
+  play: 'hold to play, release to pause & rewind 0.5s',
+  rewind: 'hold to rewind',
+  forward: 'hold to fast-forward',
+};
+const UNBINDABLE = new Set(['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'CapsLock', 'Escape']);
+
+function loadBindings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('qualtool.bindings'));
+    if (saved && saved.play && saved.rewind && saved.forward) return saved;
+  } catch (e) { /* ignore malformed storage */ }
+  return { ...DEFAULT_BINDINGS };
+}
+let bindings = loadBindings();
+function saveBindings() {
+  localStorage.setItem('qualtool.bindings', JSON.stringify(bindings));
+}
+
+function keyLabel(key) {
+  const map = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', ' ': 'Space' };
+  if (map[key]) return map[key];
+  return key.length === 1 ? key.toUpperCase() : key;
+}
+
+function renderShortcutHints() {
+  shortcutHints.innerHTML = '';
+  ['play', 'rewind', 'forward'].forEach((action) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<kbd>${keyLabel(bindings[action])}</kbd> <span>${ACTION_HINTS[action]}</span>`;
+    shortcutHints.appendChild(li);
+  });
+}
+
+let listeningFor = null;
+
+function renderShortcutList() {
+  shortcutList.innerHTML = '';
+  ['play', 'rewind', 'forward'].forEach((action) => {
+    const li = document.createElement('li');
+
+    const labelWrap = document.createElement('div');
+    labelWrap.className = 'shortcutRowLabel';
+    labelWrap.innerHTML = `${ACTION_LABELS[action]}<small>${ACTION_HINTS[action]}</small>`;
+
+    const right = document.createElement('div');
+    right.className = 'shortcutRowRight';
+
+    const badge = document.createElement('kbd');
+    badge.textContent = keyLabel(bindings[action]);
+    right.appendChild(badge);
+
+    const btn = document.createElement('button');
+    btn.className = 'btnGhost';
+    btn.type = 'button';
+    if (listeningFor === action) {
+      btn.textContent = 'Press a key… (Esc to cancel)';
+    } else {
+      btn.textContent = 'Change';
+      btn.onclick = () => {
+        if (listeningFor) return;
+        listeningFor = action;
+        shortcutMsg.textContent = '';
+        renderShortcutList();
+      };
+    }
+    right.appendChild(btn);
+
+    li.appendChild(labelWrap);
+    li.appendChild(right);
+    shortcutList.appendChild(li);
+  });
+}
+
+function openSettings() {
+  settingsOverlay.hidden = false;
+  shortcutMsg.textContent = '';
+  renderShortcutList();
+  document.getElementById('btnCloseSettings').focus();
+}
+function closeSettings() {
+  listeningFor = null;
+  settingsOverlay.hidden = true;
+  document.getElementById('btnSettings').focus();
+}
+document.getElementById('btnSettings').onclick = openSettings;
+document.getElementById('btnSettingsInline').onclick = openSettings;
+document.getElementById('btnCloseSettings').onclick = closeSettings;
+document.getElementById('btnResetShortcuts').onclick = () => {
+  bindings = { ...DEFAULT_BINDINGS };
+  saveBindings();
+  renderShortcutList();
+  renderShortcutHints();
+  shortcutMsg.textContent = 'Shortcuts reset to defaults.';
+};
+settingsOverlay.addEventListener('click', (e) => {
+  if (e.target === settingsOverlay) closeSettings();
+});
+
+function trapFocus(e) {
+  const focusables = settingsDialog.querySelectorAll('button, [href], input, select, [tabindex]:not([tabindex="-1"])');
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+
+// ---- Hold-key video shortcuts ------------------------------------------
+// ponytail: no reverse playback support in <video>, so rewind/FF are
+// simulated by nudging currentTime on an interval while the key is held.
+const SCRUB_STEP = 0.5;
+const SCRUB_MS = 100;
+let scrubTimer = null;
+const heldKeys = new Set();
+
+function isEditingCell() {
+  const el = document.activeElement;
+  return el && (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'SELECT');
+}
+function startScrub(direction) {
+  if (scrubTimer) return;
+  scrubTimer = setInterval(() => {
+    video.currentTime = Math.max(0, video.currentTime + direction * SCRUB_STEP);
+  }, SCRUB_MS);
+}
+function stopScrub() {
+  clearInterval(scrubTimer);
+  scrubTimer = null;
+}
+
+function handleKeyDown(e) {
+  // Capturing a new shortcut key inside the settings dialog.
+  if (listeningFor) {
+    e.preventDefault();
+    if (e.key === 'Escape') { listeningFor = null; renderShortcutList(); return; }
+    if (UNBINDABLE.has(e.key)) return;
+    const conflict = Object.entries(bindings).find(([act, k]) => act !== listeningFor && k === e.key);
+    if (conflict) {
+      shortcutMsg.textContent = `"${keyLabel(e.key)}" is already used for ${ACTION_LABELS[conflict[0]]}.`;
+      return;
+    }
+    bindings[listeningFor] = e.key;
+    saveBindings();
+    listeningFor = null;
+    shortcutMsg.textContent = '';
+    renderShortcutList();
+    renderShortcutHints();
+    return;
+  }
+
+  // Settings dialog open but idle: Escape closes it, Tab stays trapped inside.
+  if (!settingsOverlay.hidden) {
+    if (e.key === 'Escape') { closeSettings(); return; }
+    if (e.key === 'Tab') trapFocus(e);
+    return;
+  }
+
+  if (isEditingCell()) return;
+  if (!video.src) return;
+
+  const boundKeys = [bindings.play, bindings.rewind, bindings.forward];
+  if (!boundKeys.includes(e.key)) return;
+  e.preventDefault();
+  if (heldKeys.has(e.key)) return; // ignore key-repeat
+  heldKeys.add(e.key);
+
+  if (e.key === bindings.play) video.play();
+  else if (e.key === bindings.rewind) startScrub(-1);
+  else if (e.key === bindings.forward) startScrub(1);
+}
+
+function handleKeyUp(e) {
+  if (!heldKeys.has(e.key)) return;
+  heldKeys.delete(e.key);
+
+  if (e.key === bindings.play) {
+    video.pause();
+    video.currentTime = Math.max(0, video.currentTime - 0.5);
+  } else if (e.key === bindings.rewind || e.key === bindings.forward) {
+    stopScrub();
+  }
+}
+
+window.addEventListener('keydown', handleKeyDown);
+window.addEventListener('keyup', handleKeyUp);
+
+// ---- Layout toggle ------------------------------------------------------
+let layout = localStorage.getItem('qualtool.layout') === 'stacked' ? 'stacked' : 'side';
+function applyLayout() {
+  mainLayout.classList.toggle('layout-stacked', layout === 'stacked');
+  mainLayout.classList.toggle('layout-side', layout === 'side');
+  btnLayoutToggle.setAttribute('aria-pressed', String(layout === 'stacked'));
+  layoutLabel.textContent = layout === 'stacked' ? 'Stacked' : 'Side by side';
+}
+btnLayoutToggle.onclick = () => {
+  layout = layout === 'stacked' ? 'side' : 'stacked';
+  localStorage.setItem('qualtool.layout', layout);
+  applyLayout();
+};
+
+// ---- Cell merges (vertical, within a single column) ----------------------
+// A merge covers the anchor row plus N rows immediately below it. Anchor
+// and covered rows must stay contiguous in state.rows — if a row gets
+// inserted or deleted in between, the merge is dropped automatically
+// rather than silently covering the wrong row.
+function cleanMerges() {
+  state.merges = state.merges.filter((m) => {
+    const anchorIdx = state.rows.findIndex((r) => r.id === m.anchorRowId);
+    if (anchorIdx === -1 || !m.coveredRowIds.length) return false;
+    for (let i = 0; i < m.coveredRowIds.length; i++) {
+      const row = state.rows[anchorIdx + 1 + i];
+      if (!row || row.id !== m.coveredRowIds[i]) return false;
+    }
+    return true;
+  });
+}
+function findMerge(colId, rowId) {
+  return state.merges.find((m) => m.colId === colId && (m.anchorRowId === rowId || m.coveredRowIds.includes(rowId)));
+}
+function isCoveredCell(colId, rowId) {
+  return state.merges.some((m) => m.colId === colId && m.coveredRowIds.includes(rowId));
+}
+function mergeSpan(colId, rowId) {
+  const m = state.merges.find((mm) => mm.colId === colId && mm.anchorRowId === rowId);
+  return m ? 1 + m.coveredRowIds.length : 1;
+}
+
+let cellSelection = null; // { colId, rowIds: [...] } | null
+let selectionAnchorRowId = null;
+let draggedColId = null; // column currently being drag-reordered
+
+function selectCell(colId, rowId, extend) {
+  if (extend && cellSelection && cellSelection.colId === colId && selectionAnchorRowId) {
+    const rows = state.rows;
+    const startIdx = rows.findIndex((r) => r.id === selectionAnchorRowId);
+    const endIdx = rows.findIndex((r) => r.id === rowId);
+    const [lo, hi] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+    cellSelection = { colId, rowIds: rows.slice(lo, hi + 1).map((r) => r.id) };
+  } else {
+    selectionAnchorRowId = rowId;
+    cellSelection = { colId, rowIds: [rowId] };
+  }
+  updateSelectionHighlight();
+  updateMergeButton();
+}
+
+function updateSelectionHighlight() {
+  gridBody.querySelectorAll('td[data-col-id]').forEach((td) => {
+    const tr = td.closest('tr');
+    const match = cellSelection && td.dataset.colId === cellSelection.colId && tr && cellSelection.rowIds.includes(tr.dataset.rowId);
+    td.classList.toggle('cellSelected', !!match);
+  });
+}
+
+function updateMergeButton() {
+  const btn = document.getElementById('btnMergeCells');
+  if (cellSelection && cellSelection.rowIds.length >= 2) {
+    btn.textContent = 'Merge Cells';
+    btn.disabled = false;
+    btn.onclick = doMerge;
+    return;
+  }
+  const single = cellSelection && cellSelection.rowIds.length === 1 ? cellSelection : null;
+  const merge = single && findMerge(single.colId, single.rowIds[0]);
+  if (merge && merge.anchorRowId === single.rowIds[0]) {
+    btn.textContent = 'Unmerge Cells';
+    btn.disabled = false;
+    btn.onclick = () => doUnmerge(merge);
+  } else {
+    btn.textContent = 'Merge Cells';
+    btn.disabled = true;
+    btn.onclick = null;
+  }
+}
+
+function doMerge() {
+  const { colId, rowIds } = cellSelection;
+  if (rowIds.some((id) => findMerge(colId, id))) {
+    alert('One of the selected cells is already part of a merge — unmerge it first.');
+    return;
+  }
+  const texts = rowIds
+    .map((id) => (state.rows.find((r) => r.id === id).cells[colId] || '').trim())
+    .filter(Boolean);
+  const anchorRowId = rowIds[0];
+  state.rows.find((r) => r.id === anchorRowId).cells[colId] = texts.join(' ');
+  rowIds.slice(1).forEach((id) => { state.rows.find((r) => r.id === id).cells[colId] = ''; });
+  state.merges.push({ colId, anchorRowId, coveredRowIds: rowIds.slice(1) });
+  render();
+}
+
+function doUnmerge(merge) {
+  state.merges = state.merges.filter((m) => m !== merge);
+  render();
+}
+
+// A deleted row can be the anchor or a covered member of a merge — hand the
+// merged text down to the next row rather than silently dropping it.
+function removeRow(rowId) {
+  state.merges.forEach((m) => {
+    if (m.anchorRowId === rowId) {
+      const promoted = m.coveredRowIds.shift();
+      if (promoted) {
+        const oldAnchor = state.rows.find((r) => r.id === rowId);
+        const newAnchor = state.rows.find((r) => r.id === promoted);
+        newAnchor.cells[m.colId] = oldAnchor.cells[m.colId];
+        m.anchorRowId = promoted;
+      }
+    } else {
+      const idx = m.coveredRowIds.indexOf(rowId);
+      if (idx !== -1) m.coveredRowIds.splice(idx, 1);
+    }
+  });
+  state.merges = state.merges.filter((m) => m.coveredRowIds.length > 0);
+  state.rows = state.rows.filter((r) => r.id !== rowId);
+  if (lastFocusedRowId === rowId) lastFocusedRowId = null;
+}
+
+// ---- Grid rendering -----------------------------------------------------
+function render() {
+  cellSelection = null;
+  selectionAnchorRowId = null;
+  renderHead();
+  renderBody();
+  renderCodingPanel();
+  applyFrozenColumns();
+}
+
+// Pins user-chosen columns to the left edge of the grid while scrolling
+// horizontally. Widths vary with content, so offsets are measured from the
+// live DOM after render rather than assumed — each frozen column's `left`
+// is the summed width of the frozen columns before it.
+function applyFrozenColumns() {
+  let offset = 0;
+  state.columns.forEach((col) => {
+    const headCell = gridHeadRow.querySelector(`[data-col-id="${col.id}"]`);
+    const bodyCells = gridBody.querySelectorAll(`[data-col-id="${col.id}"]`);
+    const allCells = headCell ? [headCell, ...bodyCells] : [...bodyCells];
+    if (col.frozen) {
+      allCells.forEach((el) => {
+        el.classList.add('frozenCol');
+        el.style.left = `${offset}px`;
+      });
+      if (headCell) offset += headCell.getBoundingClientRect().width;
+    } else {
+      allCells.forEach((el) => {
+        el.classList.remove('frozenCol');
+        el.style.left = '';
+      });
+    }
+  });
+}
+
+// ---- Back-to-top overlay (targets the grid's own scroll region) ---------
+tableScroll.addEventListener('scroll', () => {
+  btnBackToTop.hidden = tableScroll.scrollTop < 300;
+});
+btnBackToTop.onclick = () => tableScroll.scrollTo({ top: 0, behavior: 'smooth' });
+
+function renderHead() {
+  gridHeadRow.innerHTML = '';
+  state.columns.forEach((col) => {
+    const th = document.createElement('th');
+    th.dataset.colId = col.id;
+    th.style.width = `${col.width || (col.id === 'time' ? 100 : 160)}px`;
+    const wrap = document.createElement('div');
+    wrap.className = 'colHead';
+
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'dragHandle';
+    dragHandle.textContent = '⠿';
+    dragHandle.title = 'Drag to reorder column';
+    dragHandle.setAttribute('aria-hidden', 'true');
+    dragHandle.draggable = true;
+    dragHandle.addEventListener('dragstart', (e) => {
+      draggedColId = col.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', col.id);
+      th.classList.add('dragging');
+    });
+    dragHandle.addEventListener('dragend', () => {
+      th.classList.remove('dragging');
+      draggedColId = null;
+    });
+    wrap.appendChild(dragHandle);
+
+    const freezeLabel = document.createElement('label');
+    freezeLabel.className = 'freezeToggle';
+    freezeLabel.title = 'Freeze this column while scrolling';
+    const freezeCb = document.createElement('input');
+    freezeCb.type = 'checkbox';
+    freezeCb.checked = !!col.frozen;
+    freezeCb.setAttribute('aria-label', `Freeze column "${col.name}"`);
+    freezeCb.onchange = () => { col.frozen = freezeCb.checked; render(); };
+    freezeLabel.appendChild(freezeCb);
+    wrap.appendChild(freezeLabel);
+
+    const nameInput = document.createElement('input');
+    nameInput.value = col.name;
+    nameInput.setAttribute('aria-label', `Rename column "${col.name}"`);
+    nameInput.onchange = () => { col.name = nameInput.value; renderCodingPanel(); };
+    wrap.appendChild(nameInput);
+
+    if (col.id !== 'time') {
+      const rm = document.createElement('button');
+      rm.className = 'rmBtn';
+      rm.textContent = '✕';
+      rm.setAttribute('aria-label', `Delete column "${col.name}"`);
+      rm.title = 'Delete column';
+      rm.onclick = () => {
+        if (!confirm(`Delete column "${col.name}"?`)) return;
+        state.columns = state.columns.filter((c) => c.id !== col.id);
+        state.rows.forEach((r) => delete r.cells[col.id]);
+        state.merges = state.merges.filter((m) => m.colId !== col.id);
+        if (activeFilter && activeFilter.colId === col.id) activeFilter = null;
+        render();
+      };
+      wrap.appendChild(rm);
+    }
+    th.appendChild(wrap);
+
+    const handle = document.createElement('span');
+    handle.className = 'colResizeHandle';
+    handle.setAttribute('aria-hidden', 'true');
+    handle.addEventListener('mousedown', (e) => startColumnResize(e, col, th, handle));
+    th.appendChild(handle);
+
+    th.addEventListener('dragover', (e) => {
+      if (!draggedColId || draggedColId === col.id) return;
+      e.preventDefault(); // required to allow a drop
+      th.classList.add('dragOver');
+    });
+    th.addEventListener('dragleave', () => th.classList.remove('dragOver'));
+    th.addEventListener('drop', (e) => {
+      e.preventDefault();
+      th.classList.remove('dragOver');
+      if (!draggedColId || draggedColId === col.id) return;
+      reorderColumn(draggedColId, col.id);
+    });
+
+    gridHeadRow.appendChild(th);
+  });
+  const rmHeadCell = document.createElement('th');
+  rmHeadCell.appendChild(Object.assign(document.createElement('span'), { className: 'visually-hidden', textContent: 'Row actions' }));
+  gridHeadRow.appendChild(rmHeadCell);
+}
+
+// Drops the dragged column immediately before the drop target, recomputing
+// the target's index after removal so it works correctly in both directions.
+function reorderColumn(draggedId, targetId) {
+  const cols = state.columns;
+  const fromIdx = cols.findIndex((c) => c.id === draggedId);
+  if (fromIdx === -1) return;
+  const [moved] = cols.splice(fromIdx, 1);
+  const toIdx = cols.findIndex((c) => c.id === targetId);
+  cols.splice(toIdx === -1 ? cols.length : toIdx, 0, moved);
+  render();
+}
+
+// Drag a column header's right edge to resize it. table-layout: fixed means
+// the header row's widths drive every cell below it, so only the <th> needs
+// to be touched.
+function startColumnResize(e, col, th, handle) {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startWidth = th.getBoundingClientRect().width;
+  handle.classList.add('resizing');
+
+  function onMove(moveEvent) {
+    const width = Math.max(60, Math.round(startWidth + (moveEvent.clientX - startX)));
+    col.width = width;
+    th.style.width = `${width}px`;
+    applyFrozenColumns();
+  }
+  function onUp() {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    handle.classList.remove('resizing');
+  }
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
+
+function renderBody() {
+  cleanMerges();
+  gridBody.innerHTML = '';
+  state.rows.forEach((row, rowIndex) => {
+    const tr = document.createElement('tr');
+    tr.dataset.rowId = row.id;
+
+    state.columns.forEach((col) => {
+      if (isCoveredCell(col.id, row.id)) return; // covered by a merge anchored above
+
+      const td = document.createElement('td');
+      td.contentEditable = 'true';
+      td.textContent = row.cells[col.id] || '';
+      td.dataset.colId = col.id;
+      td.setAttribute('aria-label', `${col.name}, row ${rowIndex + 1}`);
+      if (col.id === 'time') td.classList.add('timeCell');
+      const span = mergeSpan(col.id, row.id);
+      if (span > 1) td.rowSpan = span;
+      td.addEventListener('input', () => {
+        row.cells[col.id] = td.textContent;
+        if (activeFilter && activeFilter.colId === col.id) applyFilter();
+        renderCodingPanel();
+      });
+      td.addEventListener('focus', () => { lastFocusedRowId = row.id; });
+      td.addEventListener('mousedown', (e) => selectCell(col.id, row.id, e.shiftKey));
+      tr.appendChild(td);
+    });
+
+    const rmTd = document.createElement('td');
+    const rm = document.createElement('button');
+    rm.className = 'rmBtn';
+    rm.textContent = '✕';
+    rm.setAttribute('aria-label', `Delete row ${rowIndex + 1}`);
+    rm.title = 'Delete row';
+    rm.onclick = () => { removeRow(row.id); render(); };
+    rmTd.appendChild(rm);
+    tr.appendChild(rmTd);
+
+    gridBody.appendChild(tr);
+  });
+  applyFilter();
+  updateSelectionHighlight();
+  updateMergeButton();
+}
+
+function newRow(cells = {}) {
+  return { id: uid('r'), cells };
+}
+
+function findTimeColumnId() {
+  const byId = state.columns.find((c) => c.id === 'time');
+  if (byId) return byId.id;
+  const byName = state.columns.find((c) => /time/i.test(c.name));
+  if (byName) return byName.id;
+  return state.columns[0] ? state.columns[0].id : null;
+}
+
+// Inserts right after whichever row you were last typing in, instead of
+// always at the end of the transcript.
+function insertRow(cells = {}) {
+  const row = newRow(cells);
+  const idx = state.rows.findIndex((r) => r.id === lastFocusedRowId);
+  if (idx === -1) state.rows.push(row);
+  else state.rows.splice(idx + 1, 0, row);
+  lastFocusedRowId = row.id;
+  return row;
+}
+
+document.getElementById('btnAddRow').onclick = () => {
+  insertRow();
+  render();
+};
+
+document.getElementById('btnInsertTimestamp').onclick = () => {
+  const timeColId = findTimeColumnId();
+  const row = insertRow(timeColId ? { [timeColId]: fmtTime(video.currentTime || 0) } : {});
+  render();
+  const tr = gridBody.querySelector(`tr[data-row-id="${row.id}"]`);
+  const idx = state.columns.findIndex((c) => c.id === 'transcript');
+  const focusIdx = idx >= 0 ? idx : 0;
+  if (tr && tr.children[focusIdx]) tr.children[focusIdx].focus();
+};
+
+document.getElementById('btnAddCol').onclick = () => {
+  const name = prompt('Column name (e.g. a code category like "Emotion" or "Topic"):');
+  if (!name) return;
+  const col = { id: uid('c'), name };
+  state.columns.push(col);
+  render();
+};
+
+// ---- Coding panel: filter + counts --------------------------------------
+document.getElementById('btnToggleCoding').onclick = () => {
+  const willShow = codingPanel.hidden;
+  codingPanel.hidden = !willShow;
+  document.getElementById('btnToggleCoding').setAttribute('aria-pressed', String(willShow));
+};
+document.getElementById('btnClearFilter').onclick = () => {
+  activeFilter = null;
+  applyFilter();
+  renderCodingPanel();
+};
+codeColSelect.onchange = renderCodingPanel;
+
+function splitTags(text) {
+  return (text || '').split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+function renderCodingPanel() {
+  const prevSelected = codeColSelect.value;
+  codeColSelect.innerHTML = '';
+  state.columns.filter((c) => c.id !== 'time').forEach((col) => {
+    const opt = document.createElement('option');
+    opt.value = col.id;
+    opt.textContent = col.name;
+    codeColSelect.appendChild(opt);
+  });
+  if (prevSelected && state.columns.some((c) => c.id === prevSelected)) {
+    codeColSelect.value = prevSelected;
+  }
+
+  const colId = codeColSelect.value;
+  codeCounts.innerHTML = '';
+  if (!colId) return;
+
+  const counts = new Map();
+  state.rows.forEach((row) => {
+    splitTags(row.cells[colId]).forEach((tag) => {
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+    });
+  });
+
+  [...counts.entries()].sort((a, b) => b[1] - a[1]).forEach(([tag, count]) => {
+    const isActive = activeFilter && activeFilter.colId === colId && activeFilter.tag === tag;
+    const div = document.createElement('button');
+    div.type = 'button';
+    div.className = 'codeTag' + (isActive ? ' active' : '');
+    div.setAttribute('aria-pressed', String(!!isActive));
+    div.innerHTML = `<span>${tag}</span><span>${count}</span>`;
+    div.onclick = () => {
+      activeFilter = isActive ? null : { colId, tag };
+      applyFilter();
+      renderCodingPanel();
+    };
+    codeCounts.appendChild(div);
+  });
+}
+
+function applyFilter() {
+  [...gridBody.children].forEach((tr) => {
+    if (!activeFilter) { tr.classList.remove('hiddenRow'); return; }
+    const row = state.rows.find((r) => r.id === tr.dataset.rowId);
+    const has = splitTags(row.cells[activeFilter.colId]).includes(activeFilter.tag);
+    tr.classList.toggle('hiddenRow', !has);
+  });
+}
+
+// ---- Delimited-text parsing (transcripts are tab-delimited by default; -----
+// ---- comma/.csv still read for backward compatibility) --------------------
+function parseDelimited(text, delimiter) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === delimiter) {
+      row.push(field); field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.length > 1 || r[0] !== '');
+}
+
+function delimiterForFile(name) { return /\.csv$/i.test(name) ? ',' : '\t'; }
+
+// Reads the header row of a transcript file and builds columns to match it,
+// instead of forcing the app's default Time/Speaker/Transcript/... layout.
+function trimTrailingBlankHeaders(headerNames) {
+  // Spreadsheet exports (Excel/Numbers "Save As CSV") often pad rows with
+  // extra empty trailing columns — without this, each one becomes its own
+  // empty "Column" in the grid.
+  let lastNonEmpty = -1;
+  headerNames.forEach((h, i) => { if ((h || '').trim()) lastNonEmpty = i; });
+  return headerNames.slice(0, lastNonEmpty + 1);
+}
+
+function delimitedToState(text, delimiter) {
+  const table = parseDelimited(text, delimiter);
+  if (!table.length) return { columns: state.columns.map((c) => ({ ...c })), rows: [] };
+
+  const headerNames = trimTrailingBlankHeaders(table[0]);
+  if (!headerNames.length) return { columns: state.columns.map((c) => ({ ...c })), rows: [] };
+
+  let usedTimeId = false;
+  const columns = headerNames.map((name) => {
+    const trimmed = name.trim() || 'Column';
+    const isTime = !usedTimeId && /time/i.test(trimmed);
+    if (isTime) usedTimeId = true;
+    return { id: isTime ? 'time' : uid('c'), name: trimmed };
+  });
+  const rows = table.slice(1).map((cells) => {
+    const row = newRow();
+    columns.forEach((col, i) => { row.cells[col.id] = (cells[i] || '').trim(); });
+    return row;
+  });
+  return { columns, rows };
+}
+
+function escapeField(v, delimiter) {
+  const s = String(v ?? '');
+  return s.includes(delimiter) || s.includes('"') || s.includes('\n')
+    ? `"${s.replace(/"/g, '""')}"`
+    : s;
+}
+function stateToDelimited(delimiter) {
+  const header = state.columns.map((c) => escapeField(c.name, delimiter)).join(delimiter);
+  const lines = state.rows.map((row) =>
+    state.columns.map((c) => escapeField(row.cells[c.id], delimiter)).join(delimiter)
+  );
+  return [header, ...lines].join('\n');
+}
+
+// ---- Excel-compatible format (.xls) --------------------------------------
+// A real .xlsx is a zip of XML parts — too much to hand-roll for a local
+// tool. Excel (and this app, via DOMParser) will happily read an HTML
+// <table> saved with an .xls extension, and HTML rowspan maps directly
+// onto real Excel merged cells — no zip/XML writer needed either way.
+function escapeHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function isXlsFile(name) { return /\.xls$/i.test(name); }
+
+function stateToXls() {
+  cleanMerges();
+  const headCells = state.columns.map((c) => `<th>${escapeHtml(c.name)}</th>`).join('');
+  const bodyRows = state.rows.map((row) => {
+    const cells = state.columns.map((col) => {
+      if (isCoveredCell(col.id, row.id)) return '';
+      const span = mergeSpan(col.id, row.id);
+      const spanAttr = span > 1 ? ` rowspan="${span}"` : '';
+      const text = escapeHtml(row.cells[col.id] || '').replace(/\n/g, '<br>');
+      return `<td${spanAttr}>${text}</td>`;
+    }).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('');
+  return `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8">`
+    + `<!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet>`
+    + `<x:Name>Transcript</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>`
+    + `</x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--></head>`
+    + `<body><table border="1"><thead><tr>${headCells}</tr></thead><tbody>${bodyRows}</tbody></table></body></html>`;
+}
+
+function xlsToState(text) {
+  const doc = new DOMParser().parseFromString(text, 'text/html');
+  const table = doc.querySelector('table');
+  if (!table) return { columns: state.columns.map((c) => ({ ...c })), rows: [], merges: [] };
+
+  const headEls = [...table.querySelectorAll('thead th, thead td')];
+  const rawHeaderCells = headEls.length ? headEls : [...(table.rows[0] ? table.rows[0].cells : [])];
+  let lastNonEmpty = -1;
+  rawHeaderCells.forEach((cell, i) => { if ((cell.textContent || '').trim()) lastNonEmpty = i; });
+  if (lastNonEmpty === -1) return { columns: state.columns.map((c) => ({ ...c })), rows: [], merges: [] };
+  const headerCells = rawHeaderCells.slice(0, lastNonEmpty + 1);
+
+  let usedTimeId = false;
+  const columns = headerCells.map((cell) => {
+    const trimmed = (cell.textContent || '').trim() || 'Column';
+    const isTime = !usedTimeId && /time/i.test(trimmed);
+    if (isTime) usedTimeId = true;
+    return { id: isTime ? 'time' : uid('c'), name: trimmed };
+  });
+
+  const bodyEl = table.tBodies[0];
+  const bodyTrs = bodyEl ? [...bodyEl.rows] : [...table.rows].slice(1);
+
+  const rows = [];
+  const merges = [];
+  const pending = columns.map(() => null); // { rowsLeft, anchorRowId } per column index
+
+  bodyTrs.forEach((tr) => {
+    const row = newRow();
+    rows.push(row);
+    let cellPtr = 0;
+    columns.forEach((col, colIdx) => {
+      if (pending[colIdx] && pending[colIdx].rowsLeft > 0) {
+        let m = merges.find((mm) => mm.anchorRowId === pending[colIdx].anchorRowId && mm.colId === col.id);
+        if (!m) { m = { colId: col.id, anchorRowId: pending[colIdx].anchorRowId, coveredRowIds: [] }; merges.push(m); }
+        m.coveredRowIds.push(row.id);
+        pending[colIdx].rowsLeft--;
+        if (pending[colIdx].rowsLeft === 0) pending[colIdx] = null;
+        row.cells[col.id] = '';
+        return;
+      }
+      const cellEl = tr.cells[cellPtr]; cellPtr++;
+      row.cells[col.id] = cellEl ? cellEl.textContent.trim() : '';
+      const span = cellEl ? (parseInt(cellEl.getAttribute('rowspan'), 10) || 1) : 1;
+      if (span > 1) pending[colIdx] = { rowsLeft: span - 1, anchorRowId: row.id };
+    });
+  });
+
+  return { columns, rows, merges };
+}
+
+// ---- Real .xlsx import (read-only) ---------------------------------------
+// A real .xlsx is a zip of XML parts. Rather than pull in a library, this
+// hand-parses the zip's central directory (a small, well-defined binary
+// format) and leans on two native browser APIs to do the hard parts:
+// DecompressionStream for the zip's DEFLATE data, and DOMParser for the
+// worksheet XML. Saving still writes our simpler HTML-based .xls — building
+// a compliant zip *writer* from scratch isn't worth it when reading covers
+// what was actually asked for ("load in xlsx").
+function isXlsxFile(name) { return /\.xlsx$/i.test(name); }
+
+function parseZipCentralDirectory(bytes, dv) {
+  let eocdOffset = -1;
+  for (let i = bytes.length - 22; i >= 0; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw new Error('not a valid .xlsx file (no zip directory found)');
+  const entryCount = dv.getUint16(eocdOffset + 10, true);
+  let cdOffset = dv.getUint32(eocdOffset + 16, true);
+  const entries = [];
+  for (let i = 0; i < entryCount; i++) {
+    if (dv.getUint32(cdOffset, true) !== 0x02014b50) break;
+    const compMethod = dv.getUint16(cdOffset + 10, true);
+    const compSize = dv.getUint32(cdOffset + 20, true);
+    const nameLen = dv.getUint16(cdOffset + 28, true);
+    const extraLen = dv.getUint16(cdOffset + 30, true);
+    const commentLen = dv.getUint16(cdOffset + 32, true);
+    const localHeaderOffset = dv.getUint32(cdOffset + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(cdOffset + 46, cdOffset + 46 + nameLen));
+    entries.push({ name, compMethod, compSize, localHeaderOffset });
+    cdOffset += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+async function extractZipEntry(bytes, dv, entry) {
+  const lfNameLen = dv.getUint16(entry.localHeaderOffset + 26, true);
+  const lfExtraLen = dv.getUint16(entry.localHeaderOffset + 28, true);
+  const dataStart = entry.localHeaderOffset + 30 + lfNameLen + lfExtraLen;
+  const compData = bytes.subarray(dataStart, dataStart + entry.compSize);
+  if (entry.compMethod === 0) return compData; // stored, no compression
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('this browser can’t decompress .xlsx files — try Chrome or Safari 16.4+, or save as .xls/.csv instead');
+  }
+  const stream = new Blob([compData]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function colLetterToIndex(letters) {
+  let n = 0;
+  for (let i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+  return n - 1;
+}
+
+async function xlsxToState(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const dv = new DataView(arrayBuffer);
+  const entries = parseZipCentralDirectory(bytes, dv);
+
+  const sheetEntry = entries.find((e) => /^xl\/worksheets\/sheet1\.xml$/i.test(e.name))
+    || entries.find((e) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(e.name));
+  if (!sheetEntry) throw new Error('no worksheet found inside this .xlsx file');
+
+  let sharedStrings = [];
+  const sharedStringsEntry = entries.find((e) => e.name === 'xl/sharedStrings.xml');
+  if (sharedStringsEntry) {
+    const xml = new TextDecoder().decode(await extractZipEntry(bytes, dv, sharedStringsEntry));
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    sharedStrings = [...doc.getElementsByTagName('si')].map((si) => si.textContent || '');
+  }
+
+  const sheetXml = new TextDecoder().decode(await extractZipEntry(bytes, dv, sheetEntry));
+  const doc = new DOMParser().parseFromString(sheetXml, 'text/xml');
+
+  const grid = [];
+  [...doc.getElementsByTagName('row')].forEach((rowEl) => {
+    const rowIdx = parseInt(rowEl.getAttribute('r'), 10) - 1;
+    grid[rowIdx] = grid[rowIdx] || [];
+    [...rowEl.children].forEach((cellEl) => {
+      const ref = cellEl.getAttribute('r') || '';
+      const colIdx = colLetterToIndex(ref.replace(/\d+/g, ''));
+      if (colIdx < 0) return;
+      const type = cellEl.getAttribute('t');
+      const vEl = cellEl.querySelector('v');
+      let text = '';
+      if (type === 's' && vEl) text = sharedStrings[parseInt(vEl.textContent, 10)] || '';
+      else if (type === 'inlineStr') text = cellEl.querySelector('t')?.textContent || '';
+      else if (vEl) text = vEl.textContent || '';
+      grid[rowIdx][colIdx] = text;
+    });
+  });
+
+  const maxCol = Math.max(0, ...grid.filter(Boolean).map((r) => r.length - 1));
+  const rawHeader = (grid[0] || []).slice(0, maxCol + 1).map((v) => v || '');
+  const headerNames = trimTrailingBlankHeaders(rawHeader);
+  if (!headerNames.length) return { columns: state.columns.map((c) => ({ ...c })), rows: [], merges: [] };
+
+  let usedTimeId = false;
+  const columns = headerNames.map((name) => {
+    const trimmed = (name || '').trim() || 'Column';
+    const isTime = !usedTimeId && /time/i.test(trimmed);
+    if (isTime) usedTimeId = true;
+    return { id: isTime ? 'time' : uid('c'), name: trimmed };
+  });
+
+  const rows = grid.slice(1).map((cells) => {
+    const row = newRow();
+    columns.forEach((col, i) => { row.cells[col.id] = ((cells || [])[i] || '').toString().trim(); });
+    return row;
+  });
+
+  // Only vertical (single-column) merges map onto our data model — a real
+  // horizontal Excel merge is silently skipped rather than misrepresented.
+  const merges = [];
+  [...doc.getElementsByTagName('mergeCell')].forEach((mc) => {
+    const [start, end] = (mc.getAttribute('ref') || '').split(':');
+    if (!start || !end) return;
+    const startCol = start.replace(/\d+/g, '');
+    const endCol = end.replace(/\d+/g, '');
+    if (startCol !== endCol) return;
+    const colIdx = colLetterToIndex(startCol);
+    if (colIdx >= columns.length) return;
+    const startRow = parseInt(start.replace(/[A-Z]+/g, ''), 10) - 1 - 1; // -1 for 0-index, -1 for header row
+    const endRow = parseInt(end.replace(/[A-Z]+/g, ''), 10) - 1 - 1;
+    if (startRow < 0 || endRow <= startRow || endRow >= rows.length) return;
+    merges.push({
+      colId: columns[colIdx].id,
+      anchorRowId: rows[startRow].id,
+      coveredRowIds: rows.slice(startRow + 1, endRow + 1).map((r) => r.id),
+    });
+  });
+
+  return { columns, rows, merges };
+}
+
+// Loading a transcript file directly (from the folder list or "Open") just
+// replaces the grid — it carries no video reference by itself. `source` is
+// a File or a fetch Response — both support .text()/.arrayBuffer().
+async function parseTranscriptSource(name, source) {
+  if (isXlsxFile(name)) return xlsxToState(await source.arrayBuffer());
+  if (isXlsFile(name)) return xlsToState(await source.text());
+  return delimitedToState(await source.text(), delimiterForFile(name));
+}
+
+async function applyTranscriptContent(name, source) {
+  const loaded = await parseTranscriptSource(name, source);
+  state = { columns: loaded.columns, rows: loaded.rows, merges: loaded.merges || [] };
+  currentTranscriptFileName = name;
+  currentProjectFileName = null;
+  activeFilter = null;
+  render();
+  transcriptStart.hidden = true;
+}
+
+async function loadTranscriptFromServer(name) {
+  try {
+    const res = await fetch(`/transcripts/${encodeURIComponent(name)}`);
+    await applyTranscriptContent(name, res);
+  } catch (e) {
+    alert(`Couldn't open "${name}": ${e.message}`);
+  }
+}
+
+// Loading a project (.json) — either our new lightweight { videoFileName,
+// transcriptFileName } pointer, or an old-style file that still embeds the
+// full transcript inline. Either way, also try to auto-load the paired
+// video if it's already sitting in the videos folder.
+async function applyProjectJson(name, text) {
+  const parsed = JSON.parse(text);
+  currentProjectFileName = name;
+
+  if (parsed.columns && parsed.rows) {
+    // Legacy full project: transcript content was embedded directly.
+    state = { columns: parsed.columns, rows: parsed.rows, merges: parsed.merges || [] };
+    currentTranscriptFileName = null;
+  } else if (parsed.transcriptFileName) {
+    try {
+      const res = await fetch(`/transcripts/${encodeURIComponent(parsed.transcriptFileName)}`);
+      if (!res.ok) throw new Error('transcript file not found');
+      await applyTranscriptContent(parsed.transcriptFileName, res);
+      currentProjectFileName = name; // applyTranscriptContent above clears this; restore it
+    } catch (e) {
+      alert(`Couldn't load the linked transcript "${parsed.transcriptFileName}". Make sure the app was started via "Start Qualitative Analysis.command" and the file is still in the transcripts folder.`);
+      return;
+    }
+  }
+  activeFilter = null;
+  render();
+  transcriptStart.hidden = true;
+
+  currentVideoFileName = parsed.videoFileName || null;
+  if (!currentVideoFileName) return;
+  if (!lastVideoList.length) await refreshVideoList();
+  if (lastVideoList.includes(currentVideoFileName)) {
+    activateVideo(currentVideoFileName, `/videos/${encodeURIComponent(currentVideoFileName)}`);
+  } else {
+    resetVideoUI(`This project references "${currentVideoFileName}" — load it again to continue.`);
+  }
+}
+
+document.getElementById('btnDismissTranscriptStart').onclick = () => { transcriptStart.hidden = true; };
+
+// ---- Saving to disk via the local server --------------------------------
+async function saveToServer(dir, name, content) {
+  const res = await fetch(`/api/save?dir=${dir}&name=${encodeURIComponent(name)}`, {
+    method: 'POST',
+    body: content,
+  });
+  if (!res.ok) throw new Error(`save failed (${res.status})`);
+  return res.json();
+}
+
+let saveStatusTimer = null;
+function flashSaveStatus(msg) {
+  const el = document.getElementById('saveStatus');
+  el.textContent = msg;
+  clearTimeout(saveStatusTimer);
+  saveStatusTimer = setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+function suggestName(defaultName) {
+  const name = prompt('File name:', defaultName);
+  return name ? name.trim() : null;
+}
+
+function transcriptFileContent(name) {
+  return isXlsFile(name) ? stateToXls() : stateToDelimited(delimiterForFile(name));
+}
+
+document.getElementById('btnSaveTranscript').onclick = async () => {
+  let name = currentTranscriptFileName;
+  if (!name) {
+    name = suggestName('transcript.xls');
+    if (!name) return;
+    if (!/\.(xls|tsv|csv)$/i.test(name)) name += '.xls';
+  }
+  try {
+    await saveToServer('transcripts', name, transcriptFileContent(name));
+    currentTranscriptFileName = name;
+    refreshTranscriptList();
+    flashSaveStatus(`Saved "${name}" to transcripts folder.`);
+  } catch (e) {
+    alert('Could not save to the transcripts folder. Make sure the app was started via "Start Qualitative Analysis.command".');
+  }
+};
+
+document.getElementById('btnSaveProject').onclick = async () => {
+  if (!currentTranscriptFileName) {
+    alert('Save the transcript first — a project just links a saved transcript file with a video.');
+    return;
+  }
+  let name = currentProjectFileName;
+  if (!name) {
+    name = suggestName('project.json');
+    if (!name) return;
+    if (!/\.json$/i.test(name)) name += '.json';
+  }
+  const payload = JSON.stringify({
+    videoFileName: currentVideoFileName,
+    transcriptFileName: currentTranscriptFileName,
+  }, null, 2);
+  try {
+    await saveToServer('projects', name, payload);
+    currentProjectFileName = name;
+    flashSaveStatus(`Saved "${name}" to projects folder.`);
+  } catch (e) {
+    alert('Could not save to the projects folder. Make sure the app was started via "Start Qualitative Analysis.command".');
+  }
+};
+
+document.getElementById('btnOpenProject').onclick = () => projectInput.click();
+document.getElementById('btnOpenProject2').onclick = () => projectInput.click();
+projectInput.onchange = async () => {
+  const file = projectInput.files[0];
+  if (!file) return;
+  try {
+    if (/\.json$/i.test(file.name)) await applyProjectJson(file.name, await file.text());
+    else await applyTranscriptContent(file.name, file); // File supports .text()/.arrayBuffer() directly
+  } catch (e) {
+    alert(`Couldn't open "${file.name}": ${e.message}`);
+  }
+};
+
+// ---- Export a standalone copy (browser download, not saved to a folder) --
+document.getElementById('btnExportCopy').onclick = () => {
+  const blob = new Blob([stateToXls()], { type: 'application/vnd.ms-excel' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = currentTranscriptFileName
+    ? currentTranscriptFileName.replace(/\.(tsv|csv)$/i, '.xls')
+    : 'transcript.xls';
+  a.click();
+};
+
+// ---- Init -------------------------------------------------------------
+state.rows.push(newRow());
+applyLayout();
+applyPinVideo();
+applyVideoWidth();
+renderShortcutHints();
+render();
+refreshVideoList();
+refreshTranscriptList();
