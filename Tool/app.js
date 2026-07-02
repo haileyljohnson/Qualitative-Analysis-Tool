@@ -1687,6 +1687,16 @@ async function applyProjectJson(name, text) {
       if (!res.ok) throw new Error('transcript file not found');
       await applyTranscriptContent(parsed.transcriptFileName, res);
       currentProjectFileName = name; // applyTranscriptContent above clears this; restore it
+      // Column type isn't stored in the transcript file itself — match the
+      // project's saved types back onto the freshly-loaded columns by name.
+      // Anything renamed/added/removed in the transcript since this project
+      // was last saved is just skipped, not an error.
+      if (Array.isArray(parsed.columns)) {
+        parsed.columns.forEach((saved) => {
+          const col = state.columns.find((c) => c.name === saved.name);
+          if (col) col.type = saved.type === 'codes' ? 'codes' : 'text';
+        });
+      }
     } catch (e) {
       alert(`Couldn't load the linked transcript "${parsed.transcriptFileName}". Make sure the app was started via "Start Qualitative Analysis.command" and the file is still in the transcripts folder.`);
       return;
@@ -1766,6 +1776,12 @@ document.getElementById('btnSaveProject').onclick = async () => {
   const payload = JSON.stringify({
     videoFileName: currentVideoFileName,
     transcriptFileName: currentTranscriptFileName,
+    // Column type (text vs codes) only ever lived in memory — the
+    // transcript file itself is just names + row data. Saving it here
+    // means it survives a reload instead of having to re-mark every
+    // codes column by hand. Always the CURRENT columns, so re-saving
+    // after adding/renaming/retyping columns keeps this in sync.
+    columns: state.columns.map((c) => ({ name: c.name, type: c.type === 'codes' ? 'codes' : 'text' })),
   }, null, 2);
   try {
     await saveToServer('projects', name, payload);
