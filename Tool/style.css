@@ -420,6 +420,13 @@ th {
   text-align: left;
   position: sticky;
   top: 0;
+  /* Any body cell with an explicit `position` (e.g. td.codeCell needs
+     position:relative) is promoted into the same CSS paint category as
+     this sticky header, and ties in that category go to DOM order —
+     <tbody> comes after <thead>, so without this the cell would win and
+     visually cover the header despite the header's own position being
+     geometrically correct. An explicit z-index sidesteps the tie. */
+  z-index: 5;
   font-family: var(--font-display);
   font-size: 12.5px;
   letter-spacing: 0.03em;
@@ -550,12 +557,12 @@ td.codeCell:hover .chipAddBtn { border-color: var(--code-accent); color: var(--c
 
 .frozenCol { position: sticky; z-index: 2; background: var(--panel); box-shadow: 2px 0 4px rgba(36,29,21,0.06); }
 tbody tr:nth-child(even) td.frozenCol { background: var(--panel); }
-th.frozenCol { z-index: 3; }
+th.frozenCol { z-index: 6; } /* above the base th (5) — also sticky-left, must beat other headers scrolling past */
 
 /* Delete-row column: always pinned to the left, above any frozen columns */
 .rowActionCol { position: sticky; left: 0; z-index: 4; background: var(--panel); text-align: center; }
 tbody tr:nth-child(even) td.rowActionCol { background: var(--panel); }
-th.rowActionCol { z-index: 6; }
+th.rowActionCol { z-index: 7; } /* the top-left corner cell — highest of all, sticky in both directions */
 
 td[contenteditable] {
   outline: none;

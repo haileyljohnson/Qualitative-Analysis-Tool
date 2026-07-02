@@ -124,9 +124,13 @@ videoInput.onchange = () => {
 };
 
 function fmtTime(t) {
-  const m = Math.floor(t / 60);
-  const s = (t % 60).toFixed(1).padStart(4, '0');
-  return `${m}:${s}`;
+  const totalMs = Math.round(t * 1000);
+  const pad = (n, len = 2) => String(n).padStart(len, '0');
+  const h = Math.floor(totalMs / 3600000);
+  const m = Math.floor((totalMs % 3600000) / 60000);
+  const s = Math.floor((totalMs % 60000) / 1000);
+  const ms = totalMs % 1000;
+  return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(ms, 3)}`;
 }
 video.addEventListener('loadedmetadata', () => {
   videoSeekBar.max = String(video.duration || 0);
