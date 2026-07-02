@@ -779,6 +779,7 @@ function commitUndoSnapshot(snapshot) {
   if (undoStack.length > MAX_UNDO) undoStack.shift();
   redoStack = [];
   updateUndoRedoButtons();
+  markDirty();
 }
 function pushUndo() {
   commitUndoSnapshot(snapshotState());
@@ -787,6 +788,8 @@ function resetUndoHistory() {
   undoStack = [];
   redoStack = [];
   pendingCellEdit = null;
+  isDirty = false;
+  clearTimeout(autosaveTimer);
 }
 function undo() {
   if (!undoStack.length) return;
@@ -794,6 +797,7 @@ function undo() {
   state = undoStack.pop();
   render();
   flashSaveStatus('Undid last change.');
+  markDirty();
 }
 function redo() {
   if (!redoStack.length) return;
@@ -801,6 +805,7 @@ function redo() {
   state = redoStack.pop();
   render();
   flashSaveStatus('Redid last change.');
+  markDirty();
 }
 function updateUndoRedoButtons() {
   const btnUndo = document.getElementById('btnUndo');
@@ -1748,6 +1753,17 @@ function suggestName(defaultName) {
 function transcriptFileContent(name) {
   return isXlsFile(name) ? stateToXls() : stateToDelimited(delimiterForFile(name));
 }
+// Column type (text vs codes) only ever lived in memory — the transcript
+// file itself is just names + row data. Saving it in the project means it
+// survives a reload instead of having to re-mark every codes column by
+// hand. Always the CURRENT columns, so re-saving keeps it in sync.
+function buildProjectPayload() {
+  return JSON.stringify({
+    videoFileName: currentVideoFileName,
+    transcriptFileName: currentTranscriptFileName,
+    columns: state.columns.map((c) => ({ name: c.name, type: c.type === 'codes' ? 'codes' : 'text' })),
+  }, null, 2);
+}
 
 document.getElementById('btnSaveTranscript').onclick = async () => {
   let name = currentTranscriptFileName;
@@ -1761,6 +1777,8 @@ document.getElementById('btnSaveTranscript').onclick = async () => {
     currentTranscriptFileName = name;
     refreshTranscriptList();
     flashSaveStatus(`Saved "${name}" to transcripts folder.`);
+    isDirty = false;
+    clearTimeout(autosaveTimer);
   } catch (e) {
     alert('Could not save to the transcripts folder. Make sure the app was started via "Start Qualitative Analysis.command".');
   }
@@ -1777,24 +1795,55 @@ document.getElementById('btnSaveProject').onclick = async () => {
     if (!name) return;
     if (!/\.json$/i.test(name)) name += '.json';
   }
-  const payload = JSON.stringify({
-    videoFileName: currentVideoFileName,
-    transcriptFileName: currentTranscriptFileName,
-    // Column type (text vs codes) only ever lived in memory — the
-    // transcript file itself is just names + row data. Saving it here
-    // means it survives a reload instead of having to re-mark every
-    // codes column by hand. Always the CURRENT columns, so re-saving
-    // after adding/renaming/retyping columns keeps this in sync.
-    columns: state.columns.map((c) => ({ name: c.name, type: c.type === 'codes' ? 'codes' : 'text' })),
-  }, null, 2);
   try {
-    await saveToServer('projects', name, payload);
+    await saveToServer('projects', name, buildProjectPayload());
     currentProjectFileName = name;
     flashSaveStatus(`Saved "${name}" to projects folder.`);
   } catch (e) {
     alert('Could not save to the projects folder. Make sure the app was started via "Start Qualitative Analysis.command".');
   }
 };
+
+// ---- Autosave -------------------------------------------------------------
+// Only ever writes to a file that's already been explicitly saved/opened —
+// autosave should never invent a filename or prompt. Debounced so a burst
+// of typing produces one save, not one per keystroke; the interval is a
+// fallback in case the debounce never gets a quiet moment.
+const AUTOSAVE_DEBOUNCE_MS = 4000;
+const AUTOSAVE_INTERVAL_MS = 60000;
+let isDirty = false;
+let autosaveTimer = null;
+
+function markDirty() {
+  isDirty = true;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(runAutosave, AUTOSAVE_DEBOUNCE_MS);
+}
+
+async function runAutosave() {
+  if (!isDirty || !currentTranscriptFileName) return;
+  try {
+    await saveToServer('transcripts', currentTranscriptFileName, transcriptFileContent(currentTranscriptFileName));
+    if (currentProjectFileName) await saveToServer('projects', currentProjectFileName, buildProjectPayload());
+    isDirty = false;
+    flashSaveStatus(`Autosaved "${currentTranscriptFileName}".`);
+  } catch (e) {
+    // Leave isDirty true and quietly retry on the next interval tick —
+    // autosave failing shouldn't interrupt anyone with an alert.
+  }
+}
+setInterval(runAutosave, AUTOSAVE_INTERVAL_MS);
+
+// Best-effort flush on tab close, and warn if a save might not have landed.
+window.addEventListener('beforeunload', (e) => {
+  if (!isDirty || !currentTranscriptFileName) return;
+  navigator.sendBeacon(
+    `/api/save?dir=transcripts&name=${encodeURIComponent(currentTranscriptFileName)}`,
+    new Blob([transcriptFileContent(currentTranscriptFileName)])
+  );
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 document.getElementById('btnOpenProject').onclick = () => projectInput.click();
 document.getElementById('btnOpenProject2').onclick = () => projectInput.click();
