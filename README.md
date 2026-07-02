@@ -26,8 +26,16 @@ Drop new files into `videos/` or `transcripts/` any time. They'll show up in the
 
 ## Basic usage
 
-- **Load a video**, then use the keyboard to transcribe: hold up arrow to play, release up arrow to pause and rewind 0.5 seconds; hold left arrow for rewind and right for fast-forward. Hotkeys are rebindable in the settings (gear icon).
+- **Load a video**, then use the keyboard to transcribe: 
+	- hold up arrow to play, release up arrow to pause and rewind 0.5 seconds; 
+	- hold left arrow for rewind and 
+	- hold right for fast-forward. 
+Hotkeys are rebindable in the settings (gear icon).
 - **The transcript is a spreadsheet** — click any cell to edit, add rows/columns as needed, rename or delete columns from the header.
+	- tab moves right a cell
+	- shift + tab moves left a cell
+	- shift + up moves up a cell
+	- shift + down moves down a cell
 - **Coding**: add a column for a code category, type comma-separated tags into cells (e.g. `anxiety, work`), or create multiple columns. Then use the Coding Panel to filter and count them.
 - **Merging cells**: click a cell, shift-click another in the same column, then "Merge Cells". I found this useful for a note or behavior that spans several rows.
 - **Save Transcript** writes back to its file in `transcripts/`. 
