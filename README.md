@@ -5,7 +5,7 @@ A lightweight local qualitative analysis tool for transcribing and coding videos
 ## Requirements
 
 - Python 3 (already installed on most Macs — check with `python3 --version` in Terminal)
-- Any browser
+- Any browser (tested on chrome)
 
 ## Getting started
 
@@ -30,17 +30,20 @@ Drop new files into `videos/` or `transcripts/` any time. They'll show up in the
 	- hold up arrow to play, release up arrow to pause and rewind 0.5 seconds; 
 	- hold left arrow for rewind and 
 	- hold right for fast-forward. 
-Hotkeys are rebindable in the settings (gear icon).
-- **The transcript is a spreadsheet** — click any cell to edit, add rows/columns as needed, rename or delete columns from the header.
+Hotkeys are rebindable in the settings (gear icon). 
+You can resize video using the slider on the left of the screen. And you can drag and drop the video anywhere you want on the screen as you work.
+- **The transcript is a spreadsheet** — click any cell to edit, add rows/columns as needed, rename columns from the header.
 	- tab moves right a cell
 	- shift + tab moves left a cell
 	- shift + up moves up a cell
 	- shift + down moves down a cell
-- **Coding**: add a column for a code category, type comma-separated tags into cells (e.g. `anxiety, work`), or create multiple columns. Then use the Coding Panel to filter and count them.
+You can resize the transcript width and height by clicking the button "Resize Transcript" at top of page. 
+You can resize the columns similar to excel. And you can delete columns under button "Columns" at top of page (did not want accidental mistakes)
+- **Coding**: add a column for a code category (specify type code column under button "Columns" at top of page). In the cell click "+ add code" and either search or create new codes. You can also use the Coding Panel to filter and count them.
 - **Merging cells**: click a cell, shift-click another in the same column, then "Merge Cells". I found this useful for a note or behavior that spans several rows.
 - **Save Transcript** writes back to its file in `transcripts/`. 
-- **Save Project** links the current video + transcript together in `projects/`. 
-- **Export Copy** downloads a standalone copy.
+- **Save Project** links the current video + transcript together in `projects/`. And saves current transcript. 
+- **Export Copy** downloads a standalone copy of transcript.
 
 ## Notes
 
