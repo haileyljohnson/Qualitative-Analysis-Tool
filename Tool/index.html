@@ -118,11 +118,10 @@
 
   <aside id="codingPanel" aria-label="Coding: filter and counts" hidden>
     <h2>Coding: filter &amp; counts</h2>
-    <label class="fieldLabel">Column
-      <select id="codeColSelect"></select>
-    </label>
-    <div id="codeCounts" role="group" aria-label="Code tags"></div>
-    <button id="btnClearFilter" class="btnGhost" type="button">Clear filter</button>
+    <p class="hint">Check codes to filter. Multiple codes in one column are OR'd; different columns are AND'd together, so you can see where codes overlap.</p>
+    <p id="filterSummary" class="hint filterSummary" role="status" aria-live="polite"></p>
+    <div id="codingColumnsList" class="codingColumnsList"></div>
+    <button id="btnClearFilter" class="btnGhost" type="button">Clear all filters</button>
   </aside>
 </main>
 

@@ -17,7 +17,7 @@ let state = {
 let nextId = 1;
 const uid = (prefix) => `${prefix}${nextId++}`;
 
-let activeFilter = null; // { colId, tag } | null
+let activeFilters = new Map(); // colId -> Set of selected tags (OR within a column, AND across columns)
 let lastFocusedRowId = null; // so "+ Row" inserts after wherever you're typing, not at the end
 
 let currentVideoFileName = null;      // name of the loaded file in ./videos
@@ -45,8 +45,7 @@ const gridBody = document.getElementById('gridBody');
 const tableScroll = document.querySelector('.tableScroll');
 const btnBackToTop = document.getElementById('btnBackToTop');
 const codingPanel = document.getElementById('codingPanel');
-const codeColSelect = document.getElementById('codeColSelect');
-const codeCounts = document.getElementById('codeCounts');
+const codingColumnsList = document.getElementById('codingColumnsList');
 const projectInput = document.getElementById('projectInput');
 const transcriptStart = document.getElementById('transcriptStart');
 const transcriptList = document.getElementById('transcriptList');
@@ -874,7 +873,7 @@ function deleteColumn(col) {
   state.columns = state.columns.filter((c) => c.id !== col.id);
   state.rows.forEach((r) => delete r.cells[col.id]);
   state.merges = state.merges.filter((m) => m.colId !== col.id);
-  if (activeFilter && activeFilter.colId === col.id) activeFilter = null;
+  activeFilters.delete(col.id);
   render();
 }
 
@@ -1068,8 +1067,10 @@ function renderBody() {
         td.textContent = row.cells[col.id] || '';
         td.addEventListener('input', () => {
           row.cells[col.id] = td.textContent;
-          if (activeFilter && activeFilter.colId === col.id) applyFilter();
-          renderCodingPanel();
+          // Cheap: just re-check which rows are visible. The coding panel's
+          // own tag counts refresh once on blur (below), not per keystroke —
+          // with many columns that full rescan is too costly to do live.
+          if (activeFilters.has(col.id)) applyFilter();
         });
         td.addEventListener('focus', () => {
           pendingCellEdit = { snapshot: snapshotState(), before: row.cells[col.id] || '' };
@@ -1077,6 +1078,7 @@ function renderBody() {
         td.addEventListener('blur', () => {
           if (pendingCellEdit && pendingCellEdit.before !== (row.cells[col.id] || '')) {
             commitUndoSnapshot(pendingCellEdit.snapshot);
+            renderCodingPanel();
           }
           pendingCellEdit = null;
         });
@@ -1147,11 +1149,12 @@ document.getElementById('btnToggleCoding').onclick = () => {
   document.getElementById('btnToggleCoding').setAttribute('aria-pressed', String(willShow));
 };
 document.getElementById('btnClearFilter').onclick = () => {
-  activeFilter = null;
+  activeFilters.clear();
+  codingColumnsList.querySelectorAll('input[type="checkbox"]').forEach((cb) => { cb.checked = false; });
+  codingColumnsList.querySelectorAll('details').forEach((d) => { d.open = false; });
   applyFilter();
-  renderCodingPanel();
+  updateFilterSummary();
 };
-codeColSelect.onchange = renderCodingPanel;
 
 function splitTags(text) {
   return (text || '').split(',').map((t) => t.trim()).filter(Boolean);
@@ -1319,52 +1322,93 @@ function positionPopover(popover, anchorEl) {
   });
 }
 
+// One section per column that actually has any tags, each collapsible so a
+// transcript with many coded columns doesn't turn this into an unreadable
+// wall — auto-expanded if that column already has an active filter.
 function renderCodingPanel() {
-  const prevSelected = codeColSelect.value;
-  codeColSelect.innerHTML = '';
+  codingColumnsList.innerHTML = '';
   state.columns.filter((c) => c.id !== 'time').forEach((col) => {
-    const opt = document.createElement('option');
-    opt.value = col.id;
-    opt.textContent = col.name;
-    codeColSelect.appendChild(opt);
-  });
-  if (prevSelected && state.columns.some((c) => c.id === prevSelected)) {
-    codeColSelect.value = prevSelected;
-  }
-
-  const colId = codeColSelect.value;
-  codeCounts.innerHTML = '';
-  if (!colId) return;
-
-  const counts = new Map();
-  state.rows.forEach((row) => {
-    splitTags(row.cells[colId]).forEach((tag) => {
-      counts.set(tag, (counts.get(tag) || 0) + 1);
+    const counts = new Map();
+    state.rows.forEach((row) => {
+      splitTags(row.cells[col.id]).forEach((tag) => counts.set(tag, (counts.get(tag) || 0) + 1));
     });
-  });
+    if (!counts.size) return;
 
-  [...counts.entries()].sort((a, b) => b[1] - a[1]).forEach(([tag, count]) => {
-    const isActive = activeFilter && activeFilter.colId === colId && activeFilter.tag === tag;
-    const div = document.createElement('button');
-    div.type = 'button';
-    div.className = 'codeTag' + (isActive ? ' active' : '');
-    div.setAttribute('aria-pressed', String(!!isActive));
-    div.innerHTML = `<span>${tag}</span><span>${count}</span>`;
-    div.onclick = () => {
-      activeFilter = isActive ? null : { colId, tag };
-      applyFilter();
-      renderCodingPanel();
-    };
-    codeCounts.appendChild(div);
+    const selected = activeFilters.get(col.id);
+
+    const details = document.createElement('details');
+    details.className = 'codingColumnSection';
+    details.open = !!(selected && selected.size);
+
+    const summary = document.createElement('summary');
+    summary.textContent = col.name + (selected && selected.size ? ` — ${selected.size} selected` : '');
+    details.appendChild(summary);
+
+    const list = document.createElement('div');
+    list.className = 'codeTagList';
+    [...counts.entries()].sort((a, b) => b[1] - a[1]).forEach(([tag, count]) => {
+      const label = document.createElement('label');
+      label.className = 'codeTagRow';
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!(selected && selected.has(tag));
+      cb.onchange = () => toggleFilterTag(col.id, tag, cb.checked, details, summary, col.name);
+      label.appendChild(cb);
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'codeTagName';
+      nameSpan.textContent = tag;
+      label.appendChild(nameSpan);
+
+      const countSpan = document.createElement('span');
+      countSpan.className = 'codeTagCount';
+      countSpan.textContent = count;
+      label.appendChild(countSpan);
+
+      list.appendChild(label);
+    });
+    details.appendChild(list);
+    codingColumnsList.appendChild(details);
+  });
+  updateFilterSummary();
+}
+
+// Toggling a checkbox only needs to update the filter + row visibility +
+// this one section's summary text — not rebuild the whole panel (which
+// would reset scroll position every time you check a box).
+function toggleFilterTag(colId, tag, isSelected, details, summary, colName) {
+  if (!activeFilters.has(colId)) activeFilters.set(colId, new Set());
+  const set = activeFilters.get(colId);
+  if (isSelected) set.add(tag); else set.delete(tag);
+  if (!set.size) activeFilters.delete(colId);
+  summary.textContent = colName + (set.size ? ` — ${set.size} selected` : '');
+  applyFilter();
+  updateFilterSummary();
+}
+
+function updateFilterSummary() {
+  const summaryEl = document.getElementById('filterSummary');
+  if (!activeFilters.size) { summaryEl.textContent = ''; return; }
+  const matching = state.rows.filter((row) => rowMatchesFilters(row)).length;
+  summaryEl.textContent = `${matching} of ${state.rows.length} rows match`;
+}
+
+// AND across columns (to see overlap/co-occurrence between codes in
+// different columns), OR within a column (multiple codes in the same
+// column broaden that one column's match).
+function rowMatchesFilters(row) {
+  if (!activeFilters.size) return true;
+  return [...activeFilters.entries()].every(([colId, tags]) => {
+    const rowTags = splitTags(row.cells[colId]);
+    return [...tags].some((tag) => rowTags.includes(tag));
   });
 }
 
 function applyFilter() {
   [...gridBody.children].forEach((tr) => {
-    if (!activeFilter) { tr.classList.remove('hiddenRow'); return; }
     const row = state.rows.find((r) => r.id === tr.dataset.rowId);
-    const has = splitTags(row.cells[activeFilter.colId]).includes(activeFilter.tag);
-    tr.classList.toggle('hiddenRow', !has);
+    tr.classList.toggle('hiddenRow', !rowMatchesFilters(row));
   });
 }
 
@@ -1659,11 +1703,229 @@ async function xlsxToState(arrayBuffer) {
   return { columns, rows, merges };
 }
 
+// ---- Real .xlsx writer ----------------------------------------------------
+// If you opened a genuine .xlsx, saving should hand you back a genuine
+// .xlsx — not an HTML file wearing its extension. Mirrors the reader above:
+// a hand-rolled ZIP container (the format is small and well-defined) plus
+// minimal-but-valid OOXML parts, using CompressionStream for DEFLATE (the
+// write-side counterpart to the DecompressionStream used for reading) so
+// no compression algorithm has to be hand-written either.
+function colIndexToLetter(idx) {
+  let n = idx + 1;
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+function xmlEscape(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+async function deflateRaw(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Builds a standard PKZIP archive (local file headers + central directory +
+// end-of-central-directory record) from a list of { name, data } parts.
+async function buildZip(files) {
+  const encoder = new TextEncoder();
+  const localChunks = [];
+  const centralChunks = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = encoder.encode(file.name);
+    const rawData = file.data;
+    const compData = await deflateRaw(rawData);
+    const crc = crc32(rawData);
+
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0, true);
+    local.setUint16(8, 8, true); // method: deflate
+    local.setUint16(10, 0, true);
+    local.setUint16(12, 0, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, compData.length, true);
+    local.setUint32(22, rawData.length, true);
+    local.setUint16(26, nameBytes.length, true);
+    local.setUint16(28, 0, true);
+    localChunks.push(new Uint8Array(local.buffer), nameBytes, compData);
+
+    const central = new DataView(new ArrayBuffer(46));
+    central.setUint32(0, 0x02014b50, true);
+    central.setUint16(4, 20, true);
+    central.setUint16(6, 20, true);
+    central.setUint16(8, 0, true);
+    central.setUint16(10, 8, true);
+    central.setUint16(12, 0, true);
+    central.setUint16(14, 0, true);
+    central.setUint32(16, crc, true);
+    central.setUint32(20, compData.length, true);
+    central.setUint32(24, rawData.length, true);
+    central.setUint16(28, nameBytes.length, true);
+    central.setUint16(30, 0, true);
+    central.setUint16(32, 0, true);
+    central.setUint16(34, 0, true);
+    central.setUint16(36, 0, true);
+    central.setUint32(38, 0, true);
+    central.setUint32(42, offset, true);
+    centralChunks.push(new Uint8Array(central.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + compData.length;
+  }
+
+  const centralStart = offset;
+  const centralSize = centralChunks.reduce((sum, c) => sum + c.length, 0);
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true);
+  eocd.setUint16(4, 0, true);
+  eocd.setUint16(6, 0, true);
+  eocd.setUint16(8, files.length, true);
+  eocd.setUint16(10, files.length, true);
+  eocd.setUint32(12, centralSize, true);
+  eocd.setUint32(16, centralStart, true);
+  eocd.setUint16(20, 0, true);
+
+  return new Blob([...localChunks, ...centralChunks, new Uint8Array(eocd.buffer)]);
+}
+
+async function stateToXlsxBlob() {
+  cleanMerges();
+
+  const sharedStrings = [];
+  const stringIndex = new Map();
+  function sharedStringIndex(text) {
+    if (stringIndex.has(text)) return stringIndex.get(text);
+    const idx = sharedStrings.length;
+    sharedStrings.push(text);
+    stringIndex.set(text, idx);
+    return idx;
+  }
+
+  const headerCellsXml = state.columns.map((col, colIdx) => {
+    const ref = `${colIndexToLetter(colIdx)}1`;
+    return `<c r="${ref}" t="s"><v>${sharedStringIndex(col.name)}</v></c>`;
+  }).join('');
+
+  const bodyRowsXml = state.rows.map((row, rowIdx) => {
+    const excelRow = rowIdx + 2; // row 1 is the header
+    const cellsXml = state.columns.map((col, colIdx) => {
+      if (isCoveredCell(col.id, row.id)) return '';
+      const text = row.cells[col.id] || '';
+      if (!text) return '';
+      const ref = `${colIndexToLetter(colIdx)}${excelRow}`;
+      return `<c r="${ref}" t="s"><v>${sharedStringIndex(text)}</v></c>`;
+    }).join('');
+    return `<row r="${excelRow}">${cellsXml}</row>`;
+  }).join('');
+
+  const mergeCellsXml = state.merges.map((m) => {
+    const colIdx = state.columns.findIndex((c) => c.id === m.colId);
+    const anchorRowIdx = state.rows.findIndex((r) => r.id === m.anchorRowId);
+    if (colIdx === -1 || anchorRowIdx === -1) return '';
+    const colLetter = colIndexToLetter(colIdx);
+    const startRow = anchorRowIdx + 2;
+    const endRow = startRow + m.coveredRowIds.length;
+    return `<mergeCell ref="${colLetter}${startRow}:${colLetter}${endRow}"/>`;
+  }).filter(Boolean).join('');
+
+  const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
+    + `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
+    + `<sheetData><row r="1">${headerCellsXml}</row>${bodyRowsXml}</sheetData>`
+    + (mergeCellsXml ? `<mergeCells count="${state.merges.length}">${mergeCellsXml}</mergeCells>` : '')
+    + `</worksheet>`;
+
+  const sstXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
+    + `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedStrings.length}" uniqueCount="${sharedStrings.length}">`
+    + sharedStrings.map((s) => `<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('')
+    + `</sst>`;
+
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
+    + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">`
+    + `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>`
+    + `<Default Extension="xml" ContentType="application/xml"/>`
+    + `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>`
+    + `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+    + `<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>`
+    + `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>`
+    + `</Types>`;
+
+  const rootRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
+    + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
+    + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>`
+    + `</Relationships>`;
+
+  const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
+    + `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`
+    + `<sheets><sheet name="Transcript" sheetId="1" r:id="rId1"/></sheets>`
+    + `</workbook>`;
+
+  const workbookRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
+    + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
+    + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>`
+    + `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>`
+    + `<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`
+    + `</Relationships>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
+    + `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
+    + `<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>`
+    + `<fills count="1"><fill><patternFill patternType="none"/></fill></fills>`
+    + `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>`
+    + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
+    + `<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>`
+    + `</styleSheet>`;
+
+  const enc = new TextEncoder();
+  return buildZip([
+    { name: '[Content_Types].xml', data: enc.encode(contentTypesXml) },
+    { name: '_rels/.rels', data: enc.encode(rootRelsXml) },
+    { name: 'xl/workbook.xml', data: enc.encode(workbookXml) },
+    { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(workbookRelsXml) },
+    { name: 'xl/worksheets/sheet1.xml', data: enc.encode(sheetXml) },
+    { name: 'xl/sharedStrings.xml', data: enc.encode(sstXml) },
+    { name: 'xl/styles.xml', data: enc.encode(stylesXml) },
+  ]);
+}
+
 // Loading a transcript file directly (from the folder list or "Open") just
 // replaces the grid — it carries no video reference by itself. `source` is
 // a File or a fetch Response — both support .text()/.arrayBuffer().
+//
+// A ".xlsx" name is ambiguous: it might be a real binary Excel file, or it
+// might be our own HTML-based save reusing the filename you originally
+// opened (Save Transcript writes to whatever name is already loaded). So
+// this sniffs the actual bytes rather than trusting the extension alone —
+// real xlsx files are zip archives and always start with "PK".
 async function parseTranscriptSource(name, source) {
-  if (isXlsxFile(name)) return xlsxToState(await source.arrayBuffer());
+  if (isXlsxFile(name)) {
+    const buf = await source.arrayBuffer();
+    const head = new Uint8Array(buf.slice(0, 2));
+    const isRealZip = head[0] === 0x50 && head[1] === 0x4b; // "PK"
+    return isRealZip ? xlsxToState(buf) : xlsToState(new TextDecoder().decode(buf));
+  }
   if (isXlsFile(name)) return xlsToState(await source.text());
   return delimitedToState(await source.text(), delimiterForFile(name));
 }
@@ -1673,7 +1935,7 @@ async function applyTranscriptContent(name, source) {
   state = { columns: loaded.columns, rows: loaded.rows, merges: loaded.merges || [] };
   currentTranscriptFileName = name;
   currentProjectFileName = null;
-  activeFilter = null;
+  activeFilters.clear();
   resetUndoHistory();
   render();
   transcriptStart.hidden = true;
@@ -1722,7 +1984,7 @@ async function applyProjectJson(name, text) {
       return;
     }
   }
-  activeFilter = null;
+  activeFilters.clear();
   render();
   transcriptStart.hidden = true;
 
@@ -1761,7 +2023,8 @@ function suggestName(defaultName) {
   return name ? name.trim() : null;
 }
 
-function transcriptFileContent(name) {
+async function transcriptFileContent(name) {
+  if (isXlsxFile(name)) return stateToXlsxBlob(); // a real .xlsx you opened stays a real .xlsx
   return isXlsFile(name) ? stateToXls() : stateToDelimited(delimiterForFile(name));
 }
 // Column type (text vs codes) only ever lived in memory — the transcript
@@ -1781,10 +2044,10 @@ document.getElementById('btnSaveTranscript').onclick = async () => {
   if (!name) {
     name = suggestName('transcript.xls');
     if (!name) return;
-    if (!/\.(xls|tsv|csv)$/i.test(name)) name += '.xls';
+    if (!/\.(xlsx|xls|tsv|csv)$/i.test(name)) name += '.xls';
   }
   try {
-    await saveToServer('transcripts', name, transcriptFileContent(name));
+    await saveToServer('transcripts', name, await transcriptFileContent(name));
     currentTranscriptFileName = name;
     refreshTranscriptList();
     flashSaveStatus(`Saved "${name}" to transcripts folder.`);
@@ -1834,7 +2097,7 @@ function markDirty() {
 async function runAutosave() {
   if (!isDirty || !currentTranscriptFileName) return;
   try {
-    await saveToServer('transcripts', currentTranscriptFileName, transcriptFileContent(currentTranscriptFileName));
+    await saveToServer('transcripts', currentTranscriptFileName, await transcriptFileContent(currentTranscriptFileName));
     if (currentProjectFileName) await saveToServer('projects', currentProjectFileName, buildProjectPayload());
     isDirty = false;
     flashSaveStatus(`Autosaved "${currentTranscriptFileName}".`);
@@ -1846,12 +2109,21 @@ async function runAutosave() {
 setInterval(runAutosave, AUTOSAVE_INTERVAL_MS);
 
 // Best-effort flush on tab close, and warn if a save might not have landed.
+// Real .xlsx content has to be built asynchronously (CompressionStream),
+// and beforeunload can't reliably wait for that — so the beacon-based
+// flush only covers the synchronous formats; .xlsx just relies on the
+// browser's "leave anyway?" prompt giving you a chance to save properly.
 window.addEventListener('beforeunload', (e) => {
   if (!isDirty || !currentTranscriptFileName) return;
-  navigator.sendBeacon(
-    `/api/save?dir=transcripts&name=${encodeURIComponent(currentTranscriptFileName)}`,
-    new Blob([transcriptFileContent(currentTranscriptFileName)])
-  );
+  if (!isXlsxFile(currentTranscriptFileName)) {
+    const content = isXlsFile(currentTranscriptFileName)
+      ? stateToXls()
+      : stateToDelimited(delimiterForFile(currentTranscriptFileName));
+    navigator.sendBeacon(
+      `/api/save?dir=transcripts&name=${encodeURIComponent(currentTranscriptFileName)}`,
+      new Blob([content])
+    );
+  }
   e.preventDefault();
   e.returnValue = '';
 });
