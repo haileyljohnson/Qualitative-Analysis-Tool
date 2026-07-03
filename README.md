@@ -42,10 +42,9 @@ You can resize the columns similar to excel. And you can delete columns under bu
 - **Coding**: add a column for a code category (specify type code column under button "Columns" at top of page). In the cell click "+ add code" and either search or create new codes. You can also use the Coding Panel to filter and count them.
 - **Merging cells**: click a cell, shift-click another in the same column, then "Merge Cells". I found this useful for a note or behavior that spans several rows.
 - **Save Transcript** writes back to its file in `transcripts/`. 
-- **Save Project** links the current video + transcript together in `projects/`. And saves current transcript. 
-- **Export Copy** downloads a standalone copy of transcript.
+- **Save Project** links the current video + transcript together in `projects/`. And saves current transcript in `transcripts/`.  
 
 ## Notes
 
 - Your data never leaves your computer, everything is read from and written to these folders.
-- Real `.xlsx` files can be opened, but the app always *saves* in its own `.xls` format (a plain HTML table Excel/Numbers/Sheets can open) so merged cells are preserved.
+- If you bring in transcripts you have already made, make sure the columns that are filled with codes are comma separated if you have more than one in a cell.

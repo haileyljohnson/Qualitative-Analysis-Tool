@@ -501,7 +501,7 @@ tbody tr:nth-child(even) td { background: rgba(239,230,211,0.4); }
    header itself. ---- */
 th.codeColHeader { background: var(--code-header); }
 td.codeCell, tbody tr:nth-child(even) td.codeCell { background: var(--code-cell); }
-td.codeCell { position: relative; cursor: pointer; overflow: visible; }
+td.codeCell { position: relative; cursor: pointer; }
 td.codeCell:focus-visible { outline: 2px solid var(--code-accent); outline-offset: -2px; }
 .chipWrap { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 20px; }
 .tagChip {
@@ -571,6 +571,12 @@ th.frozenCol { z-index: 6; } /* above the base th (5) — also sticky-left, must
    even rows and winning by source order, turning half the column white). */
 td.frozenCol.codeCell,
 tbody tr:nth-child(even) td.frozenCol.codeCell { background: var(--code-cell); }
+/* td.codeCell's `position: relative` (needed so its own popover/chip layer
+   anchors correctly) has higher specificity than .frozenCol's `position:
+   sticky` alone — without this, a frozen code column silently stops being
+   sticky and scrolls away, its chip content then painting over whatever
+   non-frozen column happens to be scrolled underneath it. */
+td.frozenCol.codeCell { position: sticky; }
 
 /* Delete-row column: always pinned to the left, above any frozen columns */
 .rowActionCol { position: sticky; left: 0; z-index: 4; background: var(--panel); text-align: center; }

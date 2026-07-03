@@ -226,6 +226,11 @@ let tableHeight = parseInt(localStorage.getItem('qualtool.tableHeight'), 10) || 
 function applyTableSize() {
   document.documentElement.style.setProperty('--table-width', tableWidth ? `${tableWidth}px` : '100%');
   document.documentElement.style.setProperty('--table-height', tableHeight ? `${tableHeight}px` : '75vh');
+  // Changing the table's own width reflows every auto-sized column, but a
+  // frozen column's `left` is a plain inline style captured at the last
+  // render — without recomputing it here it goes stale and the column
+  // renders at the wrong horizontal position.
+  applyFrozenColumns();
 }
 function updateTableSizeBounds() {
   tableWidthRange.max = String(Math.max(300, window.innerWidth - 40));
@@ -1979,14 +1984,17 @@ async function applyProjectJson(name, text) {
       if (!res.ok) throw new Error('transcript file not found');
       await applyTranscriptContent(parsed.transcriptFileName, res);
       currentProjectFileName = name; // applyTranscriptContent above clears this; restore it
-      // Column type isn't stored in the transcript file itself — match the
-      // project's saved types back onto the freshly-loaded columns by name.
-      // Anything renamed/added/removed in the transcript since this project
-      // was last saved is just skipped, not an error.
+      // Column type/width/frozen aren't stored in the transcript file itself —
+      // match the project's saved values back onto the freshly-loaded columns
+      // by name. Anything renamed/added/removed in the transcript since this
+      // project was last saved is just skipped, not an error.
       if (Array.isArray(parsed.columns)) {
         parsed.columns.forEach((saved) => {
           const col = state.columns.find((c) => c.name === saved.name);
-          if (col) col.type = saved.type === 'codes' ? 'codes' : 'text';
+          if (!col) return;
+          col.type = saved.type === 'codes' ? 'codes' : 'text';
+          if (saved.width) col.width = saved.width;
+          col.frozen = !!saved.frozen;
         });
       }
     } catch (e) {
@@ -2037,15 +2045,21 @@ async function transcriptFileContent(name) {
   if (isXlsxFile(name)) return stateToXlsxBlob(); // a real .xlsx you opened stays a real .xlsx
   return isXlsFile(name) ? stateToXls() : stateToDelimited(delimiterForFile(name));
 }
-// Column type (text vs codes) only ever lived in memory — the transcript
-// file itself is just names + row data. Saving it in the project means it
-// survives a reload instead of having to re-mark every codes column by
-// hand. Always the CURRENT columns, so re-saving keeps it in sync.
+// Column type/width/frozen only ever lived in memory — the transcript file
+// itself is just names + row data. Saving it in the project means it
+// survives a reload instead of having to re-mark every codes column, redo
+// every resize, and re-freeze every column by hand. Always the CURRENT
+// columns, so re-saving keeps it in sync.
 function buildProjectPayload() {
   return JSON.stringify({
     videoFileName: currentVideoFileName,
     transcriptFileName: currentTranscriptFileName,
-    columns: state.columns.map((c) => ({ name: c.name, type: c.type === 'codes' ? 'codes' : 'text' })),
+    columns: state.columns.map((c) => ({
+      name: c.name,
+      type: c.type === 'codes' ? 'codes' : 'text',
+      width: c.width || null,
+      frozen: !!c.frozen,
+    })),
   }, null, 2);
 }
 
