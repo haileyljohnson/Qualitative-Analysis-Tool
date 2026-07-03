@@ -1327,7 +1327,7 @@ function positionPopover(popover, anchorEl) {
 // wall — auto-expanded if that column already has an active filter.
 function renderCodingPanel() {
   codingColumnsList.innerHTML = '';
-  state.columns.filter((c) => c.id !== 'time').forEach((col) => {
+  state.columns.filter((c) => c.type === 'codes').forEach((col) => {
     const counts = new Map();
     state.rows.forEach((row) => {
       splitTags(row.cells[col.id]).forEach((tag) => counts.set(tag, (counts.get(tag) || 0) + 1));
@@ -1518,6 +1518,13 @@ function stateToXls() {
     + `<body><table border="1"><thead><tr>${headCells}</tr></thead><tbody>${bodyRows}</tbody></table></body></html>`;
 }
 
+// stateToXls() writes newlines as <br> (HTML has no other way to hard-break
+// within a cell) — textContent alone would silently drop them on the way back.
+function cellText(el) {
+  [...el.querySelectorAll('br')].forEach((br) => br.replaceWith('\n'));
+  return el.textContent;
+}
+
 function xlsToState(text) {
   const doc = new DOMParser().parseFromString(text, 'text/html');
   const table = doc.querySelector('table');
@@ -1560,7 +1567,7 @@ function xlsToState(text) {
         return;
       }
       const cellEl = tr.cells[cellPtr]; cellPtr++;
-      row.cells[col.id] = cellEl ? cellEl.textContent.trim() : '';
+      row.cells[col.id] = cellEl ? cellText(cellEl).trim() : '';
       const span = cellEl ? (parseInt(cellEl.getAttribute('rowspan'), 10) || 1) : 1;
       if (span > 1) pending[colIdx] = { rowsLeft: span - 1, anchorRowId: row.id };
     });
@@ -1569,14 +1576,13 @@ function xlsToState(text) {
   return { columns, rows, merges };
 }
 
-// ---- Real .xlsx import (read-only) ---------------------------------------
-// A real .xlsx is a zip of XML parts. Rather than pull in a library, this
-// hand-parses the zip's central directory (a small, well-defined binary
-// format) and leans on two native browser APIs to do the hard parts:
-// DecompressionStream for the zip's DEFLATE data, and DOMParser for the
-// worksheet XML. Saving still writes our simpler HTML-based .xls — building
-// a compliant zip *writer* from scratch isn't worth it when reading covers
-// what was actually asked for ("load in xlsx").
+// ---- Real .xlsx import/export ---------------------------------------------
+// A real .xlsx is a zip of XML parts. Reading hand-parses the zip's central
+// directory (a small, well-defined binary format) and leans on native browser
+// APIs for the hard parts: DecompressionStream for DEFLATE, DOMParser for the
+// worksheet XML. Writing builds the same zip/XML structure back (see
+// stateToXlsxBlob below) so a file opened as real .xlsx is saved as real
+// .xlsx, not silently swapped to another format.
 function isXlsxFile(name) { return /\.xlsx$/i.test(name); }
 
 function parseZipCentralDirectory(bytes, dv) {
@@ -1924,7 +1930,11 @@ async function parseTranscriptSource(name, source) {
     const buf = await source.arrayBuffer();
     const head = new Uint8Array(buf.slice(0, 2));
     const isRealZip = head[0] === 0x50 && head[1] === 0x4b; // "PK"
-    return isRealZip ? xlsxToState(buf) : xlsToState(new TextDecoder().decode(buf));
+    if (isRealZip) return xlsxToState(buf);
+    // Recovery path: a file saved by an older, buggy version of this app
+    // could be plain tab-delimited text wearing an .xlsx name, not a real
+    // zip — this lets those old files still open correctly.
+    return delimitedToState(new TextDecoder().decode(buf), '\t');
   }
   if (isXlsFile(name)) return xlsToState(await source.text());
   return delimitedToState(await source.text(), delimiterForFile(name));

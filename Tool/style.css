@@ -815,7 +815,8 @@ tr.hiddenRow { display: none; }
 #video[hidden],
 .videoEmpty[hidden],
 .overlay[hidden],
-.backToTop[hidden] { display: none; }
+.backToTop[hidden],
+#codingPanel[hidden] { display: none; }
 
 /* ---- Responsive ---- */
 @media (max-width: 860px) {
