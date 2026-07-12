@@ -47,14 +47,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=APP_DIR, **kwargs)
 
+    # index.html/app.js/style.css change often during development, and
+    # browsers cache static files across tabs (a "fresh" tab can still get a
+    # stale app.js from a previous session's cache) — no-store on every
+    # response keeps that from ever masking a real code change again.
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/api/list":
             self.serve_list()
         elif path.startswith("/videos/") or path.startswith("/transcripts/"):
             self.serve_file_with_range(path)
+        elif path in ("/", "/index.html"):
+            self.serve_index()
         else:
             super().do_GET()
+
+    # index.html loaded straight off disk always has the same URL ("/"), so
+    # Cache-Control alone can't save a browser tab whose cache predates this
+    # server code. Instead, stamp app.js/style.css's <script>/<link> tags with
+    # a "?v=<mtime>" query string computed fresh on every request — a
+    # different URL is a guaranteed cache miss no matter what the browser
+    # already had stored, so a stale tab self-heals on its very next reload
+    # with no hard-refresh or cache-clearing needed.
+    def serve_index(self):
+        html = open(os.path.join(APP_DIR, "index.html"), "r", encoding="utf-8").read()
+        for asset in ("app.js", "style.css"):
+            version = int(os.path.getmtime(os.path.join(APP_DIR, asset)))
+            html = html.replace(f'"{asset}"', f'"{asset}?v={version}"')
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         if urlsplit(self.path).path == "/api/save":

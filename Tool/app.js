@@ -24,6 +24,7 @@ let currentVideoFileName = null;      // name of the loaded file in ./videos
 let currentTranscriptFileName = null; // name of the loaded file in ./transcripts
 let currentProjectFileName = null;    // name of the loaded file in ./projects
 
+
 // ---- Elements ---------------------------------------------------------
 const video = document.getElementById('video');
 const videoInput = document.getElementById('videoInput');
@@ -109,6 +110,7 @@ function activateVideo(fileName, src) {
   video.src = src;
   video.playbackRate = playbackRate;
   currentVideoFileName = fileName;
+  lastAutoScrollRowId = null;
   videoEmpty.hidden = true;
   video.hidden = false;
   videoControls.hidden = false;
@@ -142,12 +144,24 @@ function fmtTime(t) {
   const ms = totalMs % 1000;
   return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(ms, 3)}`;
 }
+// Reverse of fmtTime, but lenient about how a timestamp got typed
+// ("5:30", "1:02:03.5") since these cells are free-text, not enforced.
+function parseTime(text) {
+  const m = String(text || '').trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$/);
+  if (!m) return null;
+  const h = m[1] ? parseInt(m[1], 10) : 0;
+  const min = parseInt(m[2], 10);
+  const s = parseInt(m[3], 10);
+  const ms = m[4] ? parseInt(m[4].padEnd(3, '0'), 10) : 0;
+  return h * 3600 + min * 60 + s + ms / 1000;
+}
 video.addEventListener('loadedmetadata', () => {
   videoSeekBar.max = String(video.duration || 0);
 });
 video.addEventListener('timeupdate', () => {
   timeDisplay.textContent = fmtTime(video.currentTime || 0);
   videoSeekBar.value = String(video.currentTime || 0);
+  autoScrollTranscript();
 });
 video.addEventListener('play', () => { playStatus.textContent = 'Playing'; });
 video.addEventListener('pause', () => { playStatus.textContent = 'Paused'; });
@@ -498,6 +512,13 @@ function isEditingCell() {
   return el && (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'SELECT');
 }
 
+// Real form controls (dropdowns, sliders, rename fields) still need their own
+// arrow-key behavior — only transcript cells give it up to video shortcuts.
+function isFormInput() {
+  const el = document.activeElement;
+  return el && (el.tagName === 'INPUT' || el.tagName === 'SELECT');
+}
+
 function isGridCell(el) {
   return !!el && el.tagName === 'TD' && !!el.dataset.colId;
 }
@@ -599,7 +620,7 @@ function handleKeyDown(e) {
     return;
   }
 
-  if (isEditingCell()) return;
+  if (isFormInput()) return;
   if (!video.src) return;
 
   // A binding can now be a chord (e.g. "shift+w"), so "satisfied" means
@@ -1047,7 +1068,19 @@ function renderBody() {
       const td = document.createElement('td');
       td.dataset.colId = col.id;
       td.setAttribute('aria-label', `${col.name}, row ${rowIndex + 1}`);
-      if (col.id === 'time') td.classList.add('timeCell');
+      if (col.id === 'time') {
+        td.classList.add('timeCell');
+        td.title = 'Double-click to jump the video here';
+        td.addEventListener('dblclick', () => {
+          const t = parseTime(td.textContent);
+          if (t !== null && video.src) video.currentTime = t;
+        });
+      } else if (col.id !== 'time' && /time/i.test(col.name)) {
+        // Sanity check: a column that LOOKS like a time column but didn't
+        // get the special 'time' id (e.g. its header text isn't literally
+        // "time") — double-click won't be wired up on it at all.
+        td.title = col.name + ' (not recognized as the time column — double-click won’t seek)';
+      }
       const span = mergeSpan(col.id, row.id);
       if (span > 1) td.rowSpan = span;
 
@@ -1108,6 +1141,28 @@ function findTimeColumnId() {
   const byName = state.columns.find((c) => /time/i.test(c.name));
   if (byName) return byName.id;
   return state.columns[0] ? state.columns[0].id : null;
+}
+
+// Scrolls the transcript to whichever row's timestamp the video just passed,
+// keeping it in view while playback runs — including while a cell is
+// focused/being typed in, since scrolling doesn't touch the cursor or
+// keystrokes the way the video hotkeys do.
+let lastAutoScrollRowId = null;
+function autoScrollTranscript() {
+  if (video.paused) return;
+  const timeColId = findTimeColumnId();
+  if (!timeColId) return;
+  const t = video.currentTime || 0;
+  let active = null;
+  let activeTime = -Infinity;
+  state.rows.forEach((row) => {
+    const rt = parseTime(row.cells[timeColId]);
+    if (rt !== null && rt <= t && rt > activeTime) { active = row; activeTime = rt; }
+  });
+  if (!active || active.id === lastAutoScrollRowId) return;
+  lastAutoScrollRowId = active.id;
+  const tr = gridBody.querySelector(`tr[data-row-id="${active.id}"]`);
+  if (tr) tr.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 // Inserts right after whichever row you were last typing in, instead of
@@ -2008,7 +2063,11 @@ async function applyProjectJson(name, text) {
 
   currentVideoFileName = parsed.videoFileName || null;
   if (!currentVideoFileName) return;
-  if (!lastVideoList.length) await refreshVideoList();
+  // Always refresh from the server rather than trusting whatever lastVideoList
+  // happened to hold — trusting a possibly-stale/empty list here was exactly
+  // the kind of thing that could make this work or fail depending on what
+  // you'd done earlier in the session, for no reason a user could see.
+  await refreshVideoList();
   if (lastVideoList.includes(currentVideoFileName)) {
     activateVideo(currentVideoFileName, `/videos/${encodeURIComponent(currentVideoFileName)}`);
   } else {
