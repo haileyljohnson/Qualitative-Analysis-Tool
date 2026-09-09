@@ -13,6 +13,7 @@
   --danger: #8c1f13;
   --code-header: #c9dab3;
   --code-cell: #eef3e3;
+  --code-cell-alt: #e0e9d0;
   --code-accent: #5d7a3d;
   --code-accent-tint: #dbe8c8;
   --radius: 10px;
@@ -495,13 +496,14 @@ th input:hover { background: rgba(36,29,21,0.05); }
 
 tbody tr:nth-child(even) td { background: rgba(239,230,211,0.4); }
 
-/* ---- Coding columns: green so they read as distinct from text columns at
-   a glance (yellow/tan) — this is now the primary way to tell a column's
-   type apart, since type is set from the Columns dialog, not on the
-   header itself. ---- */
+/* ---- Coding columns: a green family so they read as distinct from text
+   columns (yellow/tan) at a glance — the primary way to tell a column's
+   type apart, since type lives in the Columns dialog, not the header.
+   Alternates with row parity like every other column, rather than
+   painting one flat color over the existing stripe. ---- */
 th.codeColHeader { background: var(--code-header); }
-td.codeCell, tbody tr:nth-child(even) td.codeCell { background: var(--code-cell); }
-td.codeCell { position: relative; cursor: pointer; }
+td.codeCell { background: var(--code-cell); cursor: pointer; }
+tbody tr:nth-child(even) td.codeCell { background: var(--code-cell-alt); }
 td.codeCell:focus-visible { outline: 2px solid var(--code-accent); outline-offset: -2px; }
 .chipWrap { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 20px; }
 .tagChip {
@@ -566,20 +568,17 @@ td.codeCell:hover .chipAddBtn { border-color: var(--code-accent); color: var(--c
 .frozenCol { position: sticky; z-index: 2; background: var(--panel); box-shadow: 2px 0 4px rgba(36,29,21,0.06); }
 tbody tr:nth-child(even) td.frozenCol { background: var(--panel); }
 th.frozenCol { z-index: 6; } /* above the base th (5) — also sticky-left, must beat other headers scrolling past */
-/* Freezing a code column shouldn't cost it its green identity (the two
-   rules above were tying in specificity with the code-cell background on
-   even rows and winning by source order, turning half the column white). */
-td.frozenCol.codeCell,
-tbody tr:nth-child(even) td.frozenCol.codeCell { background: var(--code-cell); }
-/* td.codeCell's `position: relative` (needed so its own popover/chip layer
-   anchors correctly) has higher specificity than .frozenCol's `position:
-   sticky` alone — without this, a frozen code column silently stops being
-   sticky and scrolls away, its chip content then painting over whatever
-   non-frozen column happens to be scrolled underneath it. */
-td.frozenCol.codeCell { position: sticky; }
+/* Freezing a code column shouldn't cost it its green identity — the
+   .frozenCol rules above tie in specificity with the plain .codeCell
+   background rules and win by source order, so restate it here (still
+   alternating with row parity) rather than falling back to flat panel/white.
+   No `position` override needed anymore: .codeCell no longer declares its
+   own `position`, so .frozenCol's `sticky` just applies untouched. */
+td.frozenCol.codeCell { background: var(--code-cell); }
+tbody tr:nth-child(even) td.frozenCol.codeCell { background: var(--code-cell-alt); }
 
 /* Delete-row column: always pinned to the left, above any frozen columns */
-.rowActionCol { position: sticky; left: 0; z-index: 4; background: var(--panel); text-align: center; }
+.rowActionCol { position: sticky; left: 0; z-index: 4; background: var(--panel); text-align: center; padding-left: 2px; padding-right: 2px; }
 tbody tr:nth-child(even) td.rowActionCol { background: var(--panel); }
 th.rowActionCol { z-index: 7; } /* the top-left corner cell — highest of all, sticky in both directions */
 
@@ -600,7 +599,7 @@ td.cellSelected {
   outline-offset: -2px;
 }
 td[rowspan] { vertical-align: middle; }
-.timeCell { min-width: 90px; font-family: var(--font-mono); color: var(--ink-soft); }
+.timeCell { font-family: var(--font-mono); color: var(--ink-soft); }
 
 .rmBtn {
   border: none;

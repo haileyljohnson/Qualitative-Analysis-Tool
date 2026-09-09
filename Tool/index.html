@@ -23,13 +23,18 @@
   </div>
 
   <div class="headerActions">
-    <div class="btnGroup" role="group" aria-label="Project">
+    <p id="saveStatus" class="hint" role="status" aria-live="polite"></p>
+    <div class="btnGroup" role="group" aria-label="Save project">
       <button id="btnSaveTranscript" class="btn" type="button">Save Transcript</button>
-      <button id="btnSaveProject" class="btn" type="button">Save Project</button>
-      <button id="btnOpenProject" class="btn" type="button">Open Project</button>
+      <button id="btnSaveProject" class="btn" type="button">Save Project (json)</button>
       <!-- <button id="btnExportCopy" class="btn" type="button">Export Copy</button> -->
     </div>
-    <p id="saveStatus" class="hint" role="status" aria-live="polite"></p>
+    <div class="btnGroup" role="group" aria-label="Open project">
+      <button id="btnOpenVideoHeader" class="btn" type="button">Open Video</button>
+      <button id="btnOpenTranscriptHeader" class="btn" type="button">Open Transcript</button>
+      <button id="btnOpenProject" class="btn" type="button">Open Project (json)</button>
+    </div>
+    <p></p>
 
     <div class="btnGroup" role="group" aria-label="View">
       <button id="btnToggleCoding" class="btn" type="button" aria-pressed="false" aria-controls="codingPanel">

@@ -128,6 +128,7 @@ playbackRateSelect.onchange = () => {
 };
 
 document.getElementById('btnOpenVideo').onclick = () => videoInput.click();
+document.getElementById('btnOpenVideoHeader').onclick = () => videoInput.click();
 document.getElementById('btnSwapVideo').onclick = () => resetVideoUI();
 videoInput.onchange = () => {
   const file = videoInput.files[0];
@@ -223,11 +224,13 @@ document.getElementById('videoDragHandle').addEventListener('mousedown', (e) => 
   function onUp() {
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
+    document.removeEventListener('mouseleave', onUp);
     document.body.style.userSelect = '';
     localStorage.setItem('qualtool.videoPos', JSON.stringify(videoPos));
   }
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
+  document.addEventListener('mouseleave', onUp); // catches mouseup firing outside the viewport, which would otherwise leak this listener pair forever
 });
 
 // ---- Transcript size (width/height popover) ------------------------------
@@ -289,13 +292,19 @@ document.getElementById('btnTableSizeReset').onclick = () => {
 // Bindings are stored as "combo strings" — modifiers in a fixed order plus
 // a main key, e.g. "shift+w" or "ctrl+shift+arrowup". A plain "arrowup" is
 // just the single-key case of the same format, so old bindings still work.
-const DEFAULT_BINDINGS = { play: 'arrowup', rewind: 'arrowleft', forward: 'arrowright' };
-const ACTION_LABELS = { play: 'Play / Pause', rewind: 'Rewind', forward: 'Fast-forward' };
+const DEFAULT_BINDINGS = { play: 'arrowup', rewind: 'arrowleft', forward: 'arrowright', timestamp: 'shift+t' };
+const ACTION_LABELS = { play: 'Play / Pause', rewind: 'Rewind', forward: 'Fast-forward', timestamp: 'Insert Timestamp' };
 const ACTION_HINTS = {
   play: 'hold to play, release to pause & rewind 0.5s',
   rewind: 'hold to rewind',
   forward: 'hold to fast-forward',
+  timestamp: 'inserts the current video time into the focused cell',
 };
+// play/rewind/forward are hold-while-down; timestamp is a one-shot press —
+// the two groups need different firing logic, but share the same binding
+// storage, capture UI, and conflict checking.
+const ACTIONS = ['play', 'rewind', 'forward', 'timestamp'];
+const HOLD_ACTIONS = ['play', 'rewind', 'forward'];
 const MODIFIER_TOKENS = new Set(['ctrl', 'alt', 'shift', 'meta']);
 const UNBINDABLE = new Set(['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'CapsLock', 'Escape']);
 const RESERVED_COMBOS = new Set(['shift+arrowup', 'shift+arrowdown']); // used for moving between rows
@@ -331,7 +340,9 @@ function loadBindings() {
       // uppercase if Shift was held without recording it as a modifier).
       // Lowercasing single characters keeps them working as a plain binding.
       const fix = (v) => (typeof v === 'string' && v.length === 1 ? v.toLowerCase() : v);
-      return { play: fix(saved.play), rewind: fix(saved.rewind), forward: fix(saved.forward) };
+      // Saves from before "timestamp" existed won't have it — fall back to
+      // the default rather than leaving the binding undefined.
+      return { play: fix(saved.play), rewind: fix(saved.rewind), forward: fix(saved.forward), timestamp: fix(saved.timestamp) || DEFAULT_BINDINGS.timestamp };
     }
   } catch (e) { /* ignore malformed storage */ }
   return { ...DEFAULT_BINDINGS };
@@ -356,7 +367,7 @@ function comboLabel(combo) {
 
 function renderShortcutHints() {
   shortcutHints.innerHTML = '';
-  ['play', 'rewind', 'forward'].forEach((action) => {
+  ACTIONS.forEach((action) => {
     const li = document.createElement('li');
     li.innerHTML = `<kbd>${comboLabel(bindings[action])}</kbd> <span>${ACTION_HINTS[action]}</span>`;
     shortcutHints.appendChild(li);
@@ -367,7 +378,7 @@ let listeningFor = null;
 
 function renderShortcutList() {
   shortcutList.innerHTML = '';
-  ['play', 'rewind', 'forward'].forEach((action) => {
+  ACTIONS.forEach((action) => {
     const li = document.createElement('li');
 
     const labelWrap = document.createElement('div');
@@ -505,6 +516,11 @@ const SCRUB_STEP = 0.5;
 const SCRUB_MS = 100;
 let scrubTimer = null;
 const heldTokens = new Set();   // every key token currently physically held (modifiers included)
+// A shift-modified symbol key (e.g. "/" -> "?") reports a DIFFERENT e.key on
+// keyup than on keydown if Shift gets released first — the physical key
+// (e.code) doesn't change, so it's used here to make sure keyup always
+// removes the exact token keydown added, even when e.key itself disagrees.
+const heldCodeToToken = new Map();
 const activeActions = new Set(); // which of play/rewind/forward are currently triggered
 
 function isEditingCell() {
@@ -563,7 +579,9 @@ function handleKeyDown(e) {
   // Track physically-held keys unconditionally, before any early returns
   // below, so modifier state stays accurate for multi-key combos even if a
   // modifier was pressed while e.g. a cell was focused.
-  heldTokens.add(keyToken(e.key));
+  const token = keyToken(e.key);
+  heldTokens.add(token);
+  if (e.code) heldCodeToToken.set(e.code, token);
 
   // Capturing a new shortcut key (or key combo) inside the settings dialog.
   if (listeningFor) {
@@ -623,10 +641,22 @@ function handleKeyDown(e) {
   if (isFormInput()) return;
   if (!video.src) return;
 
+  // One-shot: inserts the current video time at the cursor in the focused
+  // cell, rather than holding like play/rewind/forward below. Guarded by
+  // !e.repeat so holding the key down doesn't spam the cell with repeats —
+  // each distinct press inserts once.
+  if (!e.repeat && comboSatisfied(bindings.timestamp)) {
+    const el = document.activeElement;
+    if (isGridCell(el) && el.isContentEditable) {
+      e.preventDefault();
+      document.execCommand('insertText', false, fmtTime(video.currentTime || 0));
+    }
+  }
+
   // A binding can now be a chord (e.g. "shift+w"), so "satisfied" means
   // every key it names is currently held, not just the one in this event.
   let matched = false;
-  ['play', 'rewind', 'forward'].forEach((action) => {
+  HOLD_ACTIONS.forEach((action) => {
     if (!comboSatisfied(bindings[action])) return;
     matched = true;
     if (activeActions.has(action)) return; // already triggered — ignore OS key-repeat
@@ -638,11 +668,16 @@ function handleKeyDown(e) {
 }
 
 function handleKeyUp(e) {
-  heldTokens.delete(keyToken(e.key));
+  // Remove whatever token this physical key actually added on keydown —
+  // NOT keyToken(e.key), which can disagree once a modifier's release
+  // changes what e.key reports for the same key (see heldCodeToToken above).
+  const addedToken = e.code && heldCodeToToken.has(e.code) ? heldCodeToToken.get(e.code) : keyToken(e.key);
+  heldTokens.delete(addedToken);
+  if (e.code) heldCodeToToken.delete(e.code);
 
   // Releasing any key in a chord (not just the "main" one) should stop the
   // action — letting go of Shift while still holding W stops "Shift+W" too.
-  ['play', 'rewind', 'forward'].forEach((action) => {
+  HOLD_ACTIONS.forEach((action) => {
     if (!activeActions.has(action) || comboSatisfied(bindings[action])) return;
     activeActions.delete(action);
     if (action === 'play') {
@@ -662,6 +697,7 @@ window.addEventListener('keyup', handleKeyUp);
 // stay "stuck" held forever as far as the chord tracking is concerned.
 window.addEventListener('blur', () => {
   heldTokens.clear();
+  heldCodeToToken.clear();
   if (activeActions.has('play')) video.pause();
   if (activeActions.has('rewind') || activeActions.has('forward')) stopScrub();
   activeActions.clear();
@@ -935,7 +971,7 @@ function renderHead() {
   gridHeadRow.innerHTML = '';
   const rmHeadCell = document.createElement('th');
   rmHeadCell.className = 'rowActionCol';
-  rmHeadCell.style.width = '40px'; // table-layout:fixed needs every column sized explicitly
+  rmHeadCell.style.width = '28px'; // table-layout:fixed needs every column sized explicitly
   rmHeadCell.appendChild(Object.assign(document.createElement('span'), { className: 'visually-hidden', textContent: 'Row actions' }));
   gridHeadRow.appendChild(rmHeadCell);
 
@@ -1026,7 +1062,12 @@ function reorderColumn(draggedId, targetId) {
 function startColumnResize(e, col, th, handle) {
   e.preventDefault();
   const startX = e.clientX;
-  const startWidth = th.getBoundingClientRect().width;
+  // Not th.getBoundingClientRect().width: when the declared column widths don't
+  // fill the table's full width, table-layout:fixed stretches each <th> to fill
+  // the gap, so the rendered width can be larger than the column's real logical
+  // width. Starting from the inflated rendered size bakes that stretch into
+  // col.width the instant you click, snapping the column wider before you even drag.
+  const startWidth = col.width || defaultColumnWidth(col);
   handle.classList.add('resizing');
 
   function onMove(moveEvent) {
@@ -1038,10 +1079,12 @@ function startColumnResize(e, col, th, handle) {
   function onUp() {
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
+    document.removeEventListener('mouseleave', onUp);
     handle.classList.remove('resizing');
   }
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
+  document.addEventListener('mouseleave', onUp); // catches mouseup firing outside the viewport, which would otherwise leak this listener pair forever
 }
 
 function renderBody() {
@@ -1148,11 +1191,14 @@ function findTimeColumnId() {
 // focused/being typed in, since scrolling doesn't touch the cursor or
 // keystrokes the way the video hotkeys do.
 let lastAutoScrollRowId = null;
+let lastAutoScrollCheckTime = -Infinity;
 function autoScrollTranscript() {
   if (video.paused) return;
   const timeColId = findTimeColumnId();
   if (!timeColId) return;
   const t = video.currentTime || 0;
+  if (Math.abs(t - lastAutoScrollCheckTime) < 0.15) return; // timeupdate can fire much faster than the transcript needs rescanning
+  lastAutoScrollCheckTime = t;
   let active = null;
   let activeTime = -Infinity;
   state.rows.forEach((row) => {
@@ -1162,7 +1208,10 @@ function autoScrollTranscript() {
   if (!active || active.id === lastAutoScrollRowId) return;
   lastAutoScrollRowId = active.id;
   const tr = gridBody.querySelector(`tr[data-row-id="${active.id}"]`);
-  if (tr) tr.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // 'smooth' kicks off a compositor animation on this sticky-header table every
+  // time the active row changes (every few seconds with real transcripts) — that
+  // fights the video for paint/compositing time and is what causes it to hitch.
+  if (tr) tr.scrollIntoView({ block: 'center', behavior: 'auto' });
 }
 
 // Inserts right after whichever row you were last typing in, instead of
@@ -1262,10 +1311,16 @@ let currentCodeEditorCommit = null;
 function closeCodeCellEditor() {
   document.removeEventListener('mousedown', handleCodeEditorOutsideClick, true);
   if (!openCodeEditor) return;
+  const popover = openCodeEditor;
+  // Null this out BEFORE removing the popover from the DOM: removing a
+  // focused element synchronously fires its own 'focusout' listener before
+  // .remove() even returns, which calls back into this function — nulling
+  // first makes that re-entrant call a no-op instead of trying to remove
+  // (and commit) the same popover twice.
+  openCodeEditor = null;
   if (currentCodeEditorCommit) currentCodeEditorCommit();
   currentCodeEditorCommit = null;
-  openCodeEditor.remove();
-  openCodeEditor = null;
+  popover.remove();
   render();
 }
 function handleCodeEditorOutsideClick(e) {
@@ -1294,6 +1349,13 @@ function openCodeCellEditor(td, row, col) {
     changed = true;
     row.cells[col.id] = [...selected].join(', ');
     renderOptions();
+    // renderOptions() just rebuilt the option buttons from scratch, which
+    // destroys the one the user just clicked — that fires a focusout with no
+    // relatedTarget (nothing else was ever deliberately focused), and the
+    // listener below reads "focus left the popover" and closes it after
+    // every single click. Re-focusing something still inside the popover
+    // keeps it open across as many toggles as you want.
+    input.focus();
   }
 
   function renderOptions() {
@@ -1466,8 +1528,9 @@ function rowMatchesFilters(row) {
 }
 
 function applyFilter() {
+  const rowsById = new Map(state.rows.map((r) => [r.id, r])); // avoids an O(rows) find per row (O(rows^2) total) on every keystroke
   [...gridBody.children].forEach((tr) => {
-    const row = state.rows.find((r) => r.id === tr.dataset.rowId);
+    const row = rowsById.get(tr.dataset.rowId);
     tr.classList.toggle('hiddenRow', !rowMatchesFilters(row));
   });
 }
@@ -2213,6 +2276,10 @@ window.addEventListener('beforeunload', (e) => {
 
 document.getElementById('btnOpenProject').onclick = () => projectInput.click();
 document.getElementById('btnOpenProject2').onclick = () => projectInput.click();
+// Same picker/handler as "Open Project" — it already dispatches on file
+// extension (.json -> project, .xlsx/.xls/.tsv/.csv -> transcript), so a
+// transcript file picked here is handled correctly without a second input.
+document.getElementById('btnOpenTranscriptHeader').onclick = () => projectInput.click();
 projectInput.onchange = async () => {
   const file = projectInput.files[0];
   if (!file) return;
