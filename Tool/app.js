@@ -37,6 +37,7 @@ const videoSizeRange = document.getElementById('videoSizeRange');
 const videoSeekBar = document.getElementById('videoSeekBar');
 const playbackRateSelect = document.getElementById('playbackRateSelect');
 const videoPanel = document.getElementById('videoPanel');
+const mainLayout = document.getElementById('mainLayout');
 const tablePanel = document.getElementById('tablePanel');
 const playStatus = document.getElementById('playStatus');
 const timeDisplay = document.getElementById('timeDisplay');
@@ -216,7 +217,9 @@ document.getElementById('videoDragHandle').addEventListener('mousedown', (e) => 
   document.body.style.userSelect = 'none';
 
   function onMove(moveEvent) {
-    const left = Math.max(0, Math.min(window.innerWidth - 60, startLeft + (moveEvent.clientX - startX)));
+    // Mirrors the right/bottom bounds below: keeps at least 60px of the panel
+    // on-screen rather than blocking movement past the edge entirely.
+    const left = Math.max(-(rect.width - 60), Math.min(window.innerWidth - 60, startLeft + (moveEvent.clientX - startX)));
     const top = Math.max(0, Math.min(window.innerHeight - 40, startTop + (moveEvent.clientY - startY)));
     videoPos = { left, top };
     applyVideoPos();
@@ -237,8 +240,10 @@ document.getElementById('videoDragHandle').addEventListener('mousedown', (e) => 
 const tableSizePopover = document.getElementById('tableSizePopover');
 const tableWidthRange = document.getElementById('tableWidthRange');
 const tableHeightRange = document.getElementById('tableHeightRange');
+const tableAlignSelect = document.getElementById('tableAlignSelect');
 let tableWidth = parseInt(localStorage.getItem('qualtool.tableWidth'), 10) || null;
 let tableHeight = parseInt(localStorage.getItem('qualtool.tableHeight'), 10) || null;
+let tableAlignment = localStorage.getItem('qualtool.tableAlignment') || 'left';
 
 function applyTableSize() {
   document.documentElement.style.setProperty('--table-width', tableWidth ? `${tableWidth}px` : '100%');
@@ -249,13 +254,21 @@ function applyTableSize() {
   // renders at the wrong horizontal position.
   applyFrozenColumns();
 }
+// Only visible when the transcript is narrower than the layout row (e.g. after
+// shrinking it via the width slider) — docks it to whichever side is clear of
+// the (separately, freely dragged) video, instead of it always hugging the left.
+function applyTableAlignment() {
+  mainLayout.classList.toggle('alignTableRight', tableAlignment === 'right');
+}
 function updateTableSizeBounds() {
   tableWidthRange.max = String(Math.max(300, window.innerWidth - 40));
   tableHeightRange.max = String(Math.max(200, window.innerHeight - 100));
   tableWidthRange.value = String(tableWidth || tablePanel.getBoundingClientRect().width);
   tableHeightRange.value = String(tableHeight || tablePanel.getBoundingClientRect().height);
+  tableAlignSelect.value = tableAlignment;
 }
 applyTableSize();
+applyTableAlignment();
 
 document.getElementById('btnTableSize').onclick = (e) => {
   const willShow = tableSizePopover.hidden;
@@ -278,6 +291,11 @@ tableHeightRange.oninput = () => {
   tableHeight = parseInt(tableHeightRange.value, 10);
   localStorage.setItem('qualtool.tableHeight', String(tableHeight));
   applyTableSize();
+};
+tableAlignSelect.onchange = () => {
+  tableAlignment = tableAlignSelect.value;
+  localStorage.setItem('qualtool.tableAlignment', tableAlignment);
+  applyTableAlignment();
 };
 document.getElementById('btnTableSizeReset').onclick = () => {
   tableWidth = null;

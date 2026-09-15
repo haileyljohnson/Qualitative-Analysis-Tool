@@ -199,6 +199,11 @@ button { font: inherit; }
   overflow: hidden;
   animation: riseIn 0.45s 0.05s ease both;
 }
+/* Swaps the transcript to the right (coding panel to its left) and, when it's
+   narrower than the row (shrunk via Resize Transcript), pins it flush against
+   the right edge instead of leaving a gap where flex placed it by default. */
+#mainLayout.alignTableRight #tablePanel { order: 2; margin-left: auto; }
+#mainLayout.alignTableRight #codingPanel { order: 1; }
 @keyframes riseIn {
   from { opacity: 0; }
   to { opacity: 1; }
